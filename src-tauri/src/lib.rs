@@ -132,7 +132,7 @@ fn export_data_url(app: AppHandle, name: String, data_url: String) -> Result<Str
 /// found and dragged or copied into Stratbook. That window gets no access to
 /// Stratbook's commands; it is just a browser.
 #[tauri::command]
-async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
+async fn open_web(app: AppHandle, url: String) -> Result<String, String> {
     let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
     if parsed.scheme() != "https" && parsed.scheme() != "http" {
         return Err("only web addresses can be opened".into());
@@ -142,11 +142,12 @@ async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
         let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
-        return Ok(());
+        return Ok("window".into());
     }
     let mut builder = tauri::WebviewWindowBuilder::new(&app, "web", tauri::WebviewUrl::External(parsed.clone()))
-        // Must match the main window's browser arguments exactly: WebView2
-        // refuses a second webview on the same data folder with different ones.
+        // Its own browser profile folder, so WebView2 never has to share (and
+        // clash over) the main window's environment.
+        .data_directory(web_profile_dir(&app)?)
         .additional_browser_args(BROWSER_ARGS)
         .title("Stratbook web search: drag a picture into Stratbook, or right-click and Copy image")
         .inner_size(820.0, 880.0)
@@ -162,11 +163,24 @@ async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
             builder = builder.position(x, pos.y as f64 / scale);
         }
     }
-    if builder.build().is_err() {
-        // Fall back to the default browser; dragging from it works too.
-        open_in_default_browser(parsed.as_str())?;
+    match builder.build() {
+        Ok(_) => Ok("window".into()),
+        Err(e) => {
+            // Fall back to the default browser; dragging from it works too.
+            open_in_default_browser(parsed.as_str()).map_err(|e2| format!("{e}; and the default browser failed too: {e2}"))?;
+            Ok(format!("browser:{e}"))
+        }
     }
-    Ok(())
+}
+
+fn web_profile_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("web-search-profile");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 const BROWSER_ARGS: &str = "--disable-features=msWebOoUI,msPdfOOUI,msSmartScreenProtection";
@@ -174,8 +188,11 @@ const BROWSER_ARGS: &str = "--disable-features=msWebOoUI,msPdfOOUI,msSmartScreen
 fn open_in_default_browser(url: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer.exe")
-            .arg(url)
+        use std::os::windows::process::CommandExt;
+        // rundll32 hands the address to the default browser without a console window.
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url])
+            .creation_flags(0x0800_0000)
             .spawn()
             .map(|_| ())
             .map_err(|e| e.to_string())

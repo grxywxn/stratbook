@@ -1125,7 +1125,10 @@ async function webSearch(text) {
   if (!t) return;
   const looksLikeUrl = /^https?:\/\//i.test(t) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t);
   const url = looksLikeUrl ? (/^https?:/i.test(t) ? t : 'https://' + t) : ENGINES[ui.engine || 'bing'].url(t);
-  try { await Store.openWeb(url); } catch (e) { toast('Could not open the web window: ' + (e.message || e)); }
+  try {
+    const how = await Store.openWeb(url);
+    if (typeof how === 'string' && how.startsWith('browser')) toast('Opened in your web browser. Drag pictures from it into Stratbook, or copy and press Ctrl+V.');
+  } catch (e) { toast('Could not open the web search: ' + (e.message || e)); }
 }
 
 function webBar(defaultQuery) {
