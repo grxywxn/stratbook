@@ -254,10 +254,13 @@ function go(hash) { if (location.hash !== hash) location.hash = hash; else route
 function route() {
   if (board) { board.destroy(); board = null; }
   const [view, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  const tab = ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
+  const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : 'ops') : ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
   document.querySelector('.main').style.removeProperty('--map');
   document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
-  if (tab === 'ops') {
+  if (view === 'pictures') {
+    if (a === 'weapons') renderArsenalRail(); else renderOpsRail();
+    renderPictures(a === 'weapons' ? 'weapons' : 'ops');
+  } else if (tab === 'ops') {
     const op = opById(a) || [...db.operators].sort(byName)[0];
     renderOpsRail(op && op.id);
     renderOp(op);
@@ -330,6 +333,7 @@ function renderOpsRail(activeId) {
     def.map(item),
     h('div', { class: 'rail-label col' },
       h('button', { class: 'link', text: '+ Add operator', onclick: addOperator }),
+      h('a', { class: 'link strong', href: '#/pictures/ops', text: '+ Add operator pictures' }),
       h('button', { class: 'link', text: '+ Import icon pack', title: 'Pick many images at once; each is matched to an operator by its file name', onclick: importIconPack }))
   ]);
 }
@@ -929,6 +933,7 @@ function renderArsenalRail(a, b) {
     h('div', { class: 'rail-label col' },
       h('button', { class: 'link', text: '+ Add weapon', onclick: addWeapon }),
       h('button', { class: 'link', text: '+ Add gadget', onclick: addGadget }),
+      h('a', { class: 'link strong', href: '#/pictures/weapons', text: '+ Add weapon pictures' }),
       h('button', { class: 'link', text: '+ Import weapon images', title: 'Pick many images at once; each is matched to a weapon by file name', onclick: importWeaponPack }))
   ]);
 }
@@ -954,9 +959,12 @@ function renderWeapon(w) {
     ARSENAL.typeOrder.map(t => h('option', { value: t, text: typeInfo(t).label })));
   const nameIn = h('input', { class: 'in', type: 'text', value: w.name, onchange: e => { const v = e.target.value.trim(); if (v) { w.name = v; save(); route(); } } });
 
+  const bigArt = weaponArt(w, 220, 77);
+  bigArt.title = 'Drop a picture here to use it for ' + w.name;
+  acceptImageDrop(bigArt, async imgs => { await setPicture('weapons', w, imgs[0].src); route(); toast(w.name + ' picture saved'); });
   main.replaceChildren(
     h('header', { class: 'head gun-head', style: '--gun:' + ti.color },
-      weaponArt(w, 220, 77),
+      bigArt,
       h('div', {},
         h('h1', { class: 'head-title', text: w.name }),
         h('div', { class: 'head-sub' }, h('span', { class: 'type-tag', text: ti.label }), '  ', h('b', { text: String(carriers(w.id).length) }), ' operators')),
@@ -976,6 +984,7 @@ function renderWeapon(w) {
           await Store.putBlob(key, url); w.img = key; save(); route();
         } }),
         w.img ? h('button', { class: 'link', text: 'Back to the silhouette', onclick: async () => { await Store.delBlob(w.img).catch(() => {}); w.img = null; save(); route(); } }) : null,
+        h('a', { class: 'link', href: '#/pictures/weapons', text: 'Add pictures for every weapon' }),
         h('button', { class: 'link', text: 'Import weapon images', onclick: importWeaponPack }))),
       section('Weapon', 'Rename, change type, or remove', h('div', { class: 'ed-meta' },
         h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Name' }), nameIn),
@@ -1097,6 +1106,175 @@ function loadoutBlock(op, g) {
   return wrap;
 }
 
+/* ================= pictures: drag, drop, paste ================= */
+
+const PIC = {
+  ops: { label: 'operators', max: 128, q: 0.9, prefix: 'op-', list: () => db.operators.slice().sort((a, b) => (a.side === b.side ? byName(a, b) : a.side === 'atk' ? -1 : 1)), art: o => Icons.opIcon(o, 56), sub: o => o.side === 'atk' ? 'Attacker' : 'Defender' },
+  weapons: { label: 'weapons', max: 480, q: 0.85, prefix: 'wpn-', list: () => db.weapons.slice().sort((a, b) => ARSENAL.typeOrder.indexOf(a.type) - ARSENAL.typeOrder.indexOf(b.type) || byName(a, b)), art: w => weaponArt(w, 104, 36), sub: w => typeInfo(w.type).label }
+};
+
+function looksLikeImageFile(f) { return f && (f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(f.name)); }
+
+// Turn whatever was dropped or pasted into a list of { src, name }:
+// image files, or a web link to an image (downloaded for you).
+async function imagesFrom(dt) {
+  const files = [...(dt.files || [])].filter(looksLikeImageFile);
+  if (!files.length && dt.items) for (const it of dt.items) if (it.kind === 'file') { const f = it.getAsFile(); if (looksLikeImageFile(f)) files.push(f); }
+  if (files.length) return files.map(f => ({ src: f, name: f.name }));
+  let url = '';
+  const html = dt.getData && dt.getData('text/html');
+  if (html) { const m = /<img[^>]+src=["']([^"']+)["']/i.exec(html); if (m) url = m[1].replace(/&amp;/g, '&'); }
+  if (!url && dt.getData) url = (dt.getData('text/uri-list') || '').split(/\r?\n/).find(l => l && !l.startsWith('#')) || dt.getData('text/plain') || '';
+  url = url.trim();
+  if (!url) return [];
+  if (url.startsWith('data:image/')) return [{ src: url, name: 'image' }];
+  if (!/^https?:\/\//i.test(url)) return [];
+  const data = await Store.fetchImage(url);
+  let name = 'image';
+  try { name = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || 'image'); } catch (e) {}
+  return [{ src: data, name }];
+}
+
+async function setPicture(kind, item, src) {
+  const cfg = PIC[kind];
+  const { url } = await shrinkImage(src, cfg.max, cfg.q);
+  const key = slug(cfg.prefix + item.id) || cfg.prefix + uid();
+  await Store.putBlob(key, url);
+  item.img = key;
+  save();
+}
+
+function matchByName(fileName, list) {
+  const tokens = slug(fileName.replace(/\.[^.]+$/, '')).split('-').filter(Boolean);
+  const sorted = [...list].sort((a, b) => b.id.length - a.id.length);
+  return sorted.find(x => x.id === tokens.join('-')) || sorted.find(x => {
+    const want = x.id.split('-');
+    for (let i = 0; i + want.length <= tokens.length; i++) if (want.every((t, j) => tokens[i + j] === t)) return true;
+    return false;
+  }) || null;
+}
+
+// Make any element accept a dropped image.
+function acceptImageDrop(el, onImages) {
+  el.addEventListener('dragover', e => { e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'copy'; el.classList.add('drop-over'); });
+  el.addEventListener('dragleave', () => el.classList.remove('drop-over'));
+  el.addEventListener('drop', async e => {
+    e.preventDefault(); e.stopPropagation();
+    el.classList.remove('drop-over');
+    try {
+      const imgs = await imagesFrom(e.dataTransfer);
+      if (!imgs.length) { toast('No image in what you dropped. Try dragging the picture itself.'); return; }
+      await onImages(imgs);
+    } catch (err) { toast('Could not use that image: ' + (err.message || err)); }
+  });
+}
+
+function renderPictures(kind) {
+  const cfg = PIC[kind];
+  const all = cfg.list();
+  const have = all.filter(x => x.img).length;
+  const q = (ui.picQuery || '').trim().toLowerCase();
+  const filter = ui.picFilter || 'missing';
+  const shown = all.filter(x => (filter === 'all' || !x.img) && (!q || x.name.toLowerCase().includes(q)));
+  if (!shown.some(x => x.id === ui.picSel)) ui.picSel = shown[0] ? shown[0].id : null;
+
+  const advance = fromId => {
+    const list = cfg.list().filter(x => (filter === 'all' || !x.img) && (!q || x.name.toLowerCase().includes(q)));
+    const i = cfg.list().findIndex(x => x.id === fromId);
+    const next = cfg.list().slice(i + 1).find(x => !x.img && list.includes(x)) || list.find(x => !x.img);
+    ui.picSel = next ? next.id : null;
+  };
+
+  const tile = item => {
+    const el = h('div', { class: 'pic-tile' + (item.img ? ' done' : '') + (item.id === ui.picSel ? ' sel' : ''), tabindex: '0', 'data-id': item.id,
+      onclick: () => { ui.picSel = item.id; renderPictures(kind); } },
+      h('div', { class: 'pic-art' }, cfg.art(item)),
+      h('div', { class: 'pic-name', text: item.name }),
+      h('div', { class: 'pic-sub', text: item.img ? 'Done' : cfg.sub(item) }),
+      item.img ? h('button', { class: 'pic-x', title: 'Remove this picture', text: '×', onclick: async e => {
+        e.stopPropagation(); await Store.delBlob(item.img).catch(() => {}); item.img = null; save(); renderPictures(kind);
+      } }) : null);
+    acceptImageDrop(el, async imgs => {
+      await setPicture(kind, item, imgs[0].src);
+      advance(item.id);
+      renderPictures(kind);
+    });
+    return el;
+  };
+
+  const zone = h('div', { class: 'pic-zone' },
+    h('div', { class: 'pic-zone-big', text: 'Drop lots of files here' }),
+    h('div', { class: 'pic-zone-small', text: 'Each one is matched to ' + (kind === 'ops' ? 'an operator' : 'a weapon') + ' by its file name, e.g. ' + (kind === 'ops' ? 'thatcher.png' : 'R4-C.png') }),
+    h('button', { class: 'btn', text: 'Or choose files', onclick: kind === 'ops' ? importIconPack : importWeaponPack }));
+  acceptImageDrop(zone, async imgs => {
+    let done = 0; const missed = [];
+    for (const im of imgs) {
+      const item = matchByName(im.name, all);
+      if (!item) { missed.push(im.name); continue; }
+      try { await setPicture(kind, item, im.src); done++; } catch (e) { missed.push(im.name); }
+    }
+    renderPictures(kind);
+    toast(`Set ${done} picture${done === 1 ? '' : 's'}` + (missed.length ? `. No match for: ${missed.slice(0, 5).join(', ')}${missed.length > 5 ? '…' : ''}. Drag those onto their tiles instead.` : '.'));
+  });
+
+  const detail = $('#picDetail');
+  const top = detail ? detail.scrollTop : 0;
+  $('#main').replaceChildren(
+    h('header', { class: 'head' },
+      h('div', { class: 'head-num', text: pct(have, all.length) + '%' }),
+      h('div', {},
+        h('h1', { class: 'head-title', text: kind === 'ops' ? 'Operator pictures' : 'Weapon pictures' }),
+        h('div', { class: 'head-sub' }, h('b', { text: `${have} of ${all.length}` }), ` ${cfg.label} have a picture`),
+        h('div', { class: 'pic-progress' }, h('span', { style: `width:${pct(have, all.length)}%` }))),
+      h('div', { class: 'head-tools' },
+        h('div', { class: 'seg' },
+          h('a', { class: 'segl' + (kind === 'ops' ? ' on' : ''), href: '#/pictures/ops', text: 'Operators' }),
+          h('a', { class: 'segl' + (kind === 'weapons' ? ' on' : ''), href: '#/pictures/weapons', text: 'Weapons' })))),
+    h('section', { class: 'detail', id: 'picDetail', style: 'flex:1' }, h('div', { class: 'ed pics' },
+      h('ol', { class: 'pic-steps' },
+        h('li', {}, h('b', { text: 'Drag and drop. ' }), 'Open R6Calls or a wiki in your browser next to this window and drag a picture onto its tile.'),
+        h('li', {}, h('b', { text: 'Or copy and paste. ' }), 'Right-click a picture, choose Copy image, then press ', h('kbd', { text: 'Ctrl V' }), ' here. It goes on the selected tile.'),
+        h('li', {}, 'After each one, the next empty tile is selected for you.')),
+      zone,
+      h('div', { class: 'pic-tools' },
+        h('div', { class: 'seg' },
+          h('button', { class: filter === 'missing' ? 'on' : '', text: 'Still needed', onclick: () => { ui.picFilter = 'missing'; renderPictures(kind); } }),
+          h('button', { class: filter === 'all' ? 'on' : '', text: 'All', onclick: () => { ui.picFilter = 'all'; renderPictures(kind); } })),
+        h('input', { class: 'in', id: 'picFind', type: 'text', placeholder: 'Find', value: ui.picQuery || '',
+          oninput: e => { ui.picQuery = e.target.value; renderPictures(kind); const f = $('#picFind'); f.focus(); f.setSelectionRange(f.value.length, f.value.length); } })),
+      shown.length
+        ? h('div', { class: 'pic-grid' }, shown.map(tile))
+        : h('div', { class: 'empty' }, h('h3', { text: filter === 'missing' ? 'All done' : 'Nothing matches' }),
+            h('p', { text: filter === 'missing' ? `Every one of your ${cfg.label} has a picture.` : 'Try another search.' })))));
+  $('#picDetail').scrollTop = top;
+  const selEl = document.querySelector('.pic-tile.sel');
+  if (selEl) { const d = $('#picDetail'); const r = selEl.getBoundingClientRect(), dr = d.getBoundingClientRect(); if (r.top < dr.top || r.bottom > dr.bottom) selEl.scrollIntoView({ block: 'center' }); }
+}
+
+// Ctrl+V on the pictures page puts the copied image on the selected tile.
+document.addEventListener('paste', async e => {
+  if (!location.hash.startsWith('#/pictures') || typing(e)) return;
+  const kind = location.hash.includes('weapons') ? 'weapons' : 'ops';
+  const item = (kind === 'ops' ? db.operators : db.weapons).find(x => x.id === ui.picSel);
+  if (!item) { toast('Click a tile first, then paste.'); return; }
+  e.preventDefault();
+  try {
+    const imgs = await imagesFrom(e.clipboardData);
+    if (!imgs.length) { toast('No image on the clipboard. Right-click a picture and choose Copy image.'); return; }
+    await setPicture(kind, item, imgs[0].src);
+    toast(item.name + ' done');
+    const list = PIC[kind].list();
+    const i = list.indexOf(item);
+    const next = list.slice(i + 1).find(x => !x.img) || list.find(x => !x.img);
+    ui.picSel = next ? next.id : null;
+    renderPictures(kind);
+  } catch (err) { toast('Could not use that image: ' + (err.message || err)); }
+});
+
+// Dropping an image anywhere else must not open it in place of the app.
+document.addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].some(t => t === 'Files' || t === 'text/uri-list' || t === 'text/html')) e.preventDefault(); });
+document.addEventListener('drop', e => e.preventDefault());
+
 /* ================= operators ================= */
 
 function renderOp(op) {
@@ -1107,7 +1285,8 @@ function renderOp(op) {
   }
   const g = guideFor(op.id);
 
-  const iconBox = h('div', { class: 'op-big' }, Icons.opIcon(op, 72));
+  const iconBox = h('div', { class: 'op-big', title: 'Drop a picture here to use it for ' + op.name }, Icons.opIcon(op, 72));
+  acceptImageDrop(iconBox, async imgs => { await setPicture('ops', op, imgs[0].src); route(); toast(op.name + ' picture saved'); });
   const head = h('header', { class: 'head op-hero', style: `--op: hsl(${Icons.hue(op.name, op.side)} 60% 55%)` },
     iconBox,
     h('div', {},
@@ -1171,6 +1350,7 @@ function renderOp(op) {
       await Store.delBlob(op.img).catch(() => {});
       op.img = null; save(); route();
     } }) : null,
+    h('a', { class: 'link', href: '#/pictures/ops', text: 'Add pictures for everyone' }),
     h('button', { class: 'link', text: 'Import icon pack', onclick: importIconPack }),
     db.operators.some(o => o.img) ? h('button', { class: 'link', text: 'Reset all to emblems', onclick: resetIcons }) : null);
 

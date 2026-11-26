@@ -6,8 +6,9 @@
 
 use std::{
     fs,
-    io::ErrorKind,
+    io::{ErrorKind, Read},
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tauri::{AppHandle, Manager};
 
@@ -127,6 +128,57 @@ fn export_data_url(app: AppHandle, name: String, data_url: String) -> Result<Str
     Ok(path.display().to_string())
 }
 
+/// Download an image from a web address (used when a link, not a file, is
+/// dragged onto the app). Returns it as a data URL.
+#[tauri::command]
+async fn fetch_image(url: String) -> Result<String, String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("not a web address".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let resp = ureq::get(&url)
+            .timeout(Duration::from_secs(20))
+            .set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Stratbook/1.2")
+            .set("Accept", "image/*")
+            .call()
+            .map_err(|e| e.to_string())?;
+        let ctype = resp
+            .header("Content-Type")
+            .unwrap_or("")
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if !ctype.starts_with("image/") {
+            return Err(format!("that link is not an image ({ctype})"));
+        }
+        let mut bytes = Vec::new();
+        resp.into_reader()
+            .take(15_000_000)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(format!("data:{ctype};base64,{}", encode_base64(&bytes)))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn encode_base64(bytes: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | *chunk.get(2).unwrap_or(&0) as u32;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
 fn decode_base64(s: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     let (mut buf, mut bits) = (0u32, 0u32);
@@ -162,7 +214,8 @@ pub fn run() {
             delete_blob,
             data_path,
             export_text,
-            export_data_url
+            export_data_url,
+            fetch_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running Stratbook");
@@ -174,5 +227,8 @@ mod tests {
     fn base64_round_trip() {
         assert_eq!(super::decode_base64("aGVsbG8gd29ybGQ=").unwrap(), b"hello world");
         assert_eq!(super::decode_base64("YQ==").unwrap(), b"a");
+        for s in [&b""[..], b"a", b"ab", b"abc", b"hello world"] {
+            assert_eq!(super::decode_base64(&super::encode_base64(s)).unwrap(), s);
+        }
     }
 }

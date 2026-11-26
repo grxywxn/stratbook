@@ -71,19 +71,46 @@ window.Store = (() => {
     }
   }
 
-  return { native, load, save, putBlob, getBlob, cachedBlob, delBlob, exportText, exportImage, dataPath, onClose };
+  // Download an image from a web link. In the app the Rust side does it
+  // (no browser CORS limits); in a plain browser we try fetch().
+  async function fetchImage(url) {
+    if (native) return invoke('fetch_image', { url });
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('download failed (' + r.status + ')');
+    const b = await r.blob();
+    return await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(b); });
+  }
+
+  return { native, fetchImage, load, save, putBlob, getBlob, cachedBlob, delBlob, exportText, exportImage, dataPath, onClose };
 })();
 
-// Shrink an image file to a compact WebP data URL (keeps storage small).
-window.shrinkImage = async function (file, maxSide, quality) {
-  const bmp = await createImageBitmap(file);
-  const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
-  const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  c.getContext('2d').drawImage(bmp, 0, 0, w, h);
-  bmp.close && bmp.close();
-  let url = c.toDataURL('image/webp', quality);
-  if (!url.startsWith('data:image/webp')) url = c.toDataURL('image/jpeg', quality);
-  return { url, w, h };
+// Shrink an image (a File/Blob or a data URL) to a compact WebP data URL.
+// Keeps transparency, so icons with clear backgrounds stay clear.
+window.dataUrlToBlob = function (url) {
+  const [head, b64] = url.split(',');
+  const type = (/data:([^;,]+)/.exec(head) || [])[1] || 'image/png';
+  const bin = head.includes(';base64') ? atob(b64) : decodeURIComponent(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+};
+
+window.shrinkImage = async function (src, maxSide, quality) {
+  const blob = typeof src === 'string' ? dataUrlToBlob(src) : src;
+  const objUrl = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    await new Promise((res, rej) => { img.onload = res; img.onerror = () => rej(new Error('that file is not an image this app can read')); img.src = objUrl; });
+    const iw = img.naturalWidth || 256, ih = img.naturalHeight || 256;
+    const scale = Math.min(1, maxSide / Math.max(iw, ih));
+    const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    let url = c.toDataURL('image/webp', quality);
+    if (!url.startsWith('data:image/webp')) url = c.toDataURL('image/png');
+    return { url, w, h };
+  } finally {
+    URL.revokeObjectURL(objUrl);
+  }
 };

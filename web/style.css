@@ -564,3 +564,37 @@ a.bar-row:hover .bar-lbl { color: var(--signal); }
 
 .banner-tools { padding-top: 0; }
 input[type="color"] { width: 42px; height: 28px; padding: 0 2px; background: var(--panel); border: 1px solid var(--rule-2); }
+
+/* ================= v1.2: pictures page ================= */
+.link.strong { color: var(--signal); }
+.pic-progress { height: 4px; width: 260px; background: var(--raise); margin-top: 10px; }
+.pic-progress span { display: block; height: 100%; background: var(--signal); }
+.ed.pics { max-width: 1200px; }
+.pic-steps { margin: 0 0 16px; padding-left: 20px; color: var(--ink-2); display: grid; gap: 4px; }
+.pic-steps b { color: var(--ink); }
+.pic-zone {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 22px; border: 2px dashed var(--rule-2); background: var(--panel); text-align: center;
+}
+.pic-zone.drop-over { border-color: var(--signal); background: #d9c34a14; }
+.pic-zone-big { font: 600 20px/1 var(--f-display); text-transform: uppercase; letter-spacing: .03em; }
+.pic-zone-small { color: var(--ink-3); font-size: 12.5px; margin-bottom: 6px; }
+.pic-tools { display: flex; align-items: center; gap: 12px; margin: 18px 0 12px; }
+.pic-tools .in { width: 220px; }
+.pic-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(138px, 1fr)); gap: 8px; }
+.pic-tile {
+  position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 12px 8px 10px; cursor: pointer; outline: none;
+  border: 1px dashed var(--rule-2); background: var(--panel);
+}
+.pic-tile:hover { border-color: var(--ink-3); }
+.pic-tile.done { border-style: solid; border-color: var(--rule); }
+.pic-tile.sel { border: 2px solid var(--signal); padding: 11px 7px 9px; background: #2a2715; }
+.pic-tile.drop-over { border: 2px solid var(--good); background: #7fb06922; }
+.pic-art { height: 58px; display: flex; align-items: center; }
+.pic-name { font-weight: 600; text-align: center; }
+.pic-sub { font: 500 10px/1 var(--f-label); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+.pic-tile.done .pic-sub { color: var(--good); }
+.pic-x { position: absolute; top: 2px; right: 6px; font-size: 16px; color: var(--ink-3); }
+.pic-x:hover { color: var(--bad); }
+.op-big.drop-over, .gun-art.drop-over { outline: 2px dashed var(--signal); outline-offset: 4px; }
