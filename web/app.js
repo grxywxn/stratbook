@@ -254,12 +254,12 @@ function go(hash) { if (location.hash !== hash) location.hash = hash; else route
 function route() {
   if (board) { board.destroy(); board = null; }
   const [view, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : 'ops') : ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
+  const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : a === 'maps' ? 'maps' : 'ops') : ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
   document.querySelector('.main').style.removeProperty('--map');
   document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
   if (view === 'pictures') {
-    if (a === 'weapons') renderArsenalRail(); else renderOpsRail();
-    renderPictures(a === 'weapons' ? 'weapons' : 'ops');
+    if (a === 'weapons') renderArsenalRail(); else if (a === 'maps') renderMapsRail(); else renderOpsRail();
+    renderPictures(PIC[a] ? a : 'ops');
   } else if (tab === 'ops') {
     const op = opById(a) || [...db.operators].sort(byName)[0];
     renderOpsRail(op && op.id);
@@ -303,7 +303,7 @@ function renderMapsRail(activeId) {
         h('span', { class: 'name' }, m.name, bp ? h('i', { class: 'bp-dot', title: 'Has blueprints' }) : null),
         h('span', { class: 'count' + (n ? ' has' : ''), text: n ? String(n) : '·' }));
     }),
-    h('div', { class: 'rail-label' }, h('button', { class: 'link', text: '+ Add map', onclick: addMap }))
+    h('div', { class: 'rail-label col' }, h('a', { class: 'link strong', href: '#/pictures/maps', text: '+ Set map banners' }), h('button', { class: 'link', text: '+ Add map', onclick: addMap }))
   ]);
 }
 
@@ -409,6 +409,12 @@ function mapHead(map, view) {
     h('div', { class: 'head-tools' }, viewSeg, h('span', { class: 'tool-gap' }), tools));
 }
 
+function bannerDrop(head, map) {
+  head.title = 'Drop a picture here to use it as the ' + map.name + ' banner';
+  acceptImageDrop(head, async imgs => { await setPicture('maps', map, imgs[0].src); route(); toast(map.name + ' banner saved'); });
+  return head;
+}
+
 function renderMap(map, stratId, boardTab) {
   const main = $('#main');
   if (!map) {
@@ -422,7 +428,7 @@ function renderMap(map, stratId, boardTab) {
 
   const list = h('section', { class: 'list', id: 'stratList' });
   const detail = h('section', { class: 'detail', id: 'detail' });
-  main.replaceChildren(mapHead(map, 'strats'), h('div', { class: 'body' + (ui.wide && current.boardTab ? ' wide' : '') }, list, detail));
+  main.replaceChildren(bannerDrop(mapHead(map, 'strats'), map), h('div', { class: 'body' + (ui.wide && current.boardTab ? ' wide' : '') }, list, detail));
   renderStratList();
   renderDetail();
 }
@@ -887,7 +893,7 @@ function renderMapsHome() {
       h('div', { class: 'head-num', text: '--' }),
       h('div', {}, h('h1', { class: 'head-title', text: 'Maps' }),
         h('div', { class: 'head-sub' }, h('b', { text: String(db.maps.length) }), ' maps · ', h('b', { text: String(total) }), total === 1 ? ' strat' : ' strats')),
-      h('div', { class: 'head-tools' }, h('button', { class: 'btn', text: '+ Add map', onclick: addMap }))),
+      h('div', { class: 'head-tools' }, h('a', { class: 'btn primary', href: '#/pictures/maps', text: 'Set map banners' }), h('button', { class: 'btn', text: '+ Add map', onclick: addMap }))),
     h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'map-grid' }, cards)));
 }
 
@@ -1109,8 +1115,9 @@ function loadoutBlock(op, g) {
 /* ================= pictures: drag, drop, paste ================= */
 
 const PIC = {
-  ops: { label: 'operators', max: 128, q: 0.9, prefix: 'op-', list: () => db.operators.slice().sort((a, b) => (a.side === b.side ? byName(a, b) : a.side === 'atk' ? -1 : 1)), art: o => Icons.opIcon(o, 76), sub: o => o.side === 'atk' ? 'Attacker' : 'Defender' },
-  weapons: { label: 'weapons', max: 480, q: 0.85, prefix: 'wpn-', list: () => db.weapons.slice().sort((a, b) => ARSENAL.typeOrder.indexOf(a.type) - ARSENAL.typeOrder.indexOf(b.type) || byName(a, b)), art: w => weaponArt(w, 104, 36), sub: w => typeInfo(w.type).label }
+  maps: { label: 'maps', field: 'banner', max: 1600, q: 0.82, prefix: 'banner-', list: () => db.maps.slice(), art: m => h('span', { class: 'pic-banner', style: `background-image:${bannerUrl(m)}` }), sub: m => m.floors.length + ' floors' },
+  ops: { label: 'operators', field: 'img', max: 128, q: 0.9, prefix: 'op-', list: () => db.operators.slice().sort((a, b) => (a.side === b.side ? byName(a, b) : a.side === 'atk' ? -1 : 1)), art: o => Icons.opIcon(o, 76), sub: o => o.side === 'atk' ? 'Attacker' : 'Defender' },
+  weapons: { label: 'weapons', field: 'img', max: 480, q: 0.85, prefix: 'wpn-', list: () => db.weapons.slice().sort((a, b) => ARSENAL.typeOrder.indexOf(a.type) - ARSENAL.typeOrder.indexOf(b.type) || byName(a, b)), art: w => weaponArt(w, 104, 36), sub: w => typeInfo(w.type).label }
 };
 
 const ENGINES = {
@@ -1169,7 +1176,7 @@ async function setPicture(kind, item, src) {
   const { url } = await shrinkImage(src, cfg.max, cfg.q);
   const key = slug(cfg.prefix + item.id) || cfg.prefix + uid();
   await Store.putBlob(key, url);
-  item.img = key;
+  item[cfg.field] = key;
   save();
 }
 
@@ -1201,27 +1208,29 @@ function acceptImageDrop(el, onImages) {
 function renderPictures(kind) {
   const cfg = PIC[kind];
   const all = cfg.list();
-  const have = all.filter(x => x.img).length;
+  const F = cfg.field;
+  const has = x => !!x[F];
+  const have = all.filter(has).length;
   const q = (ui.picQuery || '').trim().toLowerCase();
   const filter = ui.picFilter || 'missing';
-  const shown = all.filter(x => (filter === 'all' || !x.img) && (!q || x.name.toLowerCase().includes(q)));
+  const shown = all.filter(x => (filter === 'all' || !has(x)) && (!q || x.name.toLowerCase().includes(q)));
   if (!shown.some(x => x.id === ui.picSel)) ui.picSel = shown[0] ? shown[0].id : null;
 
   const advance = fromId => {
-    const list = cfg.list().filter(x => (filter === 'all' || !x.img) && (!q || x.name.toLowerCase().includes(q)));
+    const list = cfg.list().filter(x => (filter === 'all' || !has(x)) && (!q || x.name.toLowerCase().includes(q)));
     const i = cfg.list().findIndex(x => x.id === fromId);
-    const next = cfg.list().slice(i + 1).find(x => !x.img && list.includes(x)) || list.find(x => !x.img);
+    const next = cfg.list().slice(i + 1).find(x => !has(x) && list.includes(x)) || list.find(x => !has(x));
     ui.picSel = next ? next.id : null;
   };
 
   const tile = item => {
-    const el = h('div', { class: 'pic-tile' + (item.img ? ' done' : '') + (item.id === ui.picSel ? ' sel' : ''), tabindex: '0', 'data-id': item.id,
+    const el = h('div', { class: 'pic-tile' + (has(item) ? ' done' : '') + (item.id === ui.picSel ? ' sel' : ''), tabindex: '0', 'data-id': item.id,
       onclick: () => { ui.picSel = item.id; renderPictures(kind); } },
       h('div', { class: 'pic-art' }, cfg.art(item)),
       h('div', { class: 'pic-name', text: item.name }),
-      h('div', { class: 'pic-sub', text: item.img ? 'Done' : cfg.sub(item) }),
-      item.img ? h('button', { class: 'pic-x', title: 'Remove this picture', text: '×', onclick: async e => {
-        e.stopPropagation(); await Store.delBlob(item.img).catch(() => {}); item.img = null; save(); renderPictures(kind);
+      h('div', { class: 'pic-sub', text: has(item) ? 'Done' : cfg.sub(item) }),
+      has(item) ? h('button', { class: 'pic-x', title: 'Remove this picture', text: '×', onclick: async e => {
+        e.stopPropagation(); await Store.delBlob(item[F]).catch(() => {}); item[F] = null; save(); renderPictures(kind);
       } }) : null);
     acceptImageDrop(el, async imgs => {
       await setPicture(kind, item, imgs[0].src);
@@ -1233,8 +1242,17 @@ function renderPictures(kind) {
 
   const zone = h('div', { class: 'pic-zone' },
     h('div', { class: 'pic-zone-big', text: 'Drop lots of files here' }),
-    h('div', { class: 'pic-zone-small', text: 'Each one is matched to ' + (kind === 'ops' ? 'an operator' : 'a weapon') + ' by its file name, e.g. ' + (kind === 'ops' ? 'thatcher.png' : 'R4-C.png') }),
-    h('button', { class: 'btn', text: 'Or choose files', onclick: kind === 'ops' ? importIconPack : importWeaponPack }));
+    h('div', { class: 'pic-zone-small', text: 'Each one is matched to ' + ({ ops: 'an operator', weapons: 'a weapon', maps: 'a map' })[kind] + ' by its file name, e.g. ' + ({ ops: 'thatcher.png', weapons: 'R4-C.png', maps: 'clubhouse.jpg' })[kind] }),
+    h('button', { class: 'btn', text: 'Or choose files', onclick: async () => {
+      const files = await pickImages(); if (!files.length) return;
+      zone.dispatchEvent(Object.assign(new Event('stratbook-files'), { files }));
+    } }));
+  zone.addEventListener('stratbook-files', async e => {
+    let done = 0; const missed = [];
+    for (const f of e.files) { const item = matchByName(f.name, all); if (!item) { missed.push(f.name); continue; } try { await setPicture(kind, item, f); done++; } catch (err) { missed.push(f.name); } }
+    renderPictures(kind);
+    toast(`Set ${done} picture${done === 1 ? '' : 's'}` + (missed.length ? `. No match for: ${missed.slice(0, 5).join(', ')}` : '.'));
+  });
   acceptImageDrop(zone, async imgs => {
     let done = 0; const missed = [];
     for (const im of imgs) {
@@ -1252,11 +1270,12 @@ function renderPictures(kind) {
     h('header', { class: 'head' },
       h('div', { class: 'head-num', text: pct(have, all.length) + '%' }),
       h('div', {},
-        h('h1', { class: 'head-title', text: kind === 'ops' ? 'Operator pictures' : 'Weapon pictures' }),
-        h('div', { class: 'head-sub' }, h('b', { text: `${have} of ${all.length}` }), ` ${cfg.label} have a picture`),
+        h('h1', { class: 'head-title', text: ({ ops: 'Operator pictures', weapons: 'Weapon pictures', maps: 'Map banners' })[kind] }),
+        h('div', { class: 'head-sub' }, h('b', { text: `${have} of ${all.length}` }), ` ${cfg.label} have ${kind === 'maps' ? 'your own banner' : 'a picture'}`),
         h('div', { class: 'pic-progress' }, h('span', { style: `width:${pct(have, all.length)}%` }))),
       h('div', { class: 'head-tools' },
         h('div', { class: 'seg' },
+          h('a', { class: 'segl' + (kind === 'maps' ? ' on' : ''), href: '#/pictures/maps', text: 'Maps' }),
           h('a', { class: 'segl' + (kind === 'ops' ? ' on' : ''), href: '#/pictures/ops', text: 'Operators' }),
           h('a', { class: 'segl' + (kind === 'weapons' ? ' on' : ''), href: '#/pictures/weapons', text: 'Weapons' })))),
     h('section', { class: 'detail', id: 'picDetail', style: 'flex:1' }, h('div', { class: 'ed pics' },
@@ -1265,7 +1284,7 @@ function renderPictures(kind) {
         h('li', {}, h('b', { text: 'Drag and drop. ' }), 'Drag a picture from the web window (or any browser) onto its tile.'),
         h('li', {}, h('b', { text: 'Or copy and paste. ' }), 'Right-click a picture, choose Copy image, then press ', h('kbd', { text: 'Ctrl V' }), ' here. It goes on the selected tile.'),
         h('li', {}, 'After each one, the next empty tile is selected for you.')),
-      webBar((() => { const it = all.find(x => x.id === ui.picSel); return it ? it.name + (kind === 'ops' ? ' Rainbow Six Siege operator' : ' Rainbow Six Siege') : ''; })()),
+      webBar((() => { const it = all.find(x => x.id === ui.picSel); return it ? it.name + ({ ops: ' Rainbow Six Siege operator', weapons: ' Rainbow Six Siege', maps: ' Rainbow Six Siege map wallpaper' })[kind] : ''; })()),
       zone,
       h('div', { class: 'pic-tools' },
         h('div', { class: 'seg' },
@@ -1276,7 +1295,7 @@ function renderPictures(kind) {
       shown.length
         ? h('div', { class: 'pic-grid' }, shown.map(tile))
         : h('div', { class: 'empty' }, h('h3', { text: filter === 'missing' ? 'All done' : 'Nothing matches' }),
-            h('p', { text: filter === 'missing' ? `Every one of your ${cfg.label} has a picture.` : 'Try another search.' })))));
+            h('p', { text: filter === 'missing' ? `Every one of your ${cfg.label} has ${kind === 'maps' ? 'a banner' : 'a picture'}.` : 'Try another search.' })))));
   $('#picDetail').scrollTop = top;
   const selEl = document.querySelector('.pic-tile.sel');
   if (selEl) { const d = $('#picDetail'); const r = selEl.getBoundingClientRect(), dr = d.getBoundingClientRect(); if (r.top < dr.top || r.bottom > dr.bottom) selEl.scrollIntoView({ block: 'center' }); }
@@ -1285,8 +1304,8 @@ function renderPictures(kind) {
 // Ctrl+V on the pictures page puts the copied image on the selected tile.
 document.addEventListener('paste', async e => {
   if (!location.hash.startsWith('#/pictures') || typing(e)) return;
-  const kind = location.hash.includes('weapons') ? 'weapons' : 'ops';
-  const item = (kind === 'ops' ? db.operators : db.weapons).find(x => x.id === ui.picSel);
+  const kind = location.hash.includes('weapons') ? 'weapons' : location.hash.includes('maps') ? 'maps' : 'ops';
+  const item = PIC[kind].list().find(x => x.id === ui.picSel);
   if (!item) { toast('Click a tile first, then paste.'); return; }
   e.preventDefault();
   try {
@@ -1296,7 +1315,8 @@ document.addEventListener('paste', async e => {
     toast(item.name + ' done');
     const list = PIC[kind].list();
     const i = list.indexOf(item);
-    const next = list.slice(i + 1).find(x => !x.img) || list.find(x => !x.img);
+    const F = PIC[kind].field;
+    const next = list.slice(i + 1).find(x => !x[F]) || list.find(x => !x[F]);
     ui.picSel = next ? next.id : null;
     renderPictures(kind);
   } catch (err) { toast('Could not use that image: ' + (err.message || err)); }

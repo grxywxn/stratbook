@@ -608,3 +608,6 @@ input[type="color"] { width: 42px; height: 28px; padding: 0 2px; background: var
 .bar-lbl .op-ico { margin-right: 2px; }
 .rail-item.op { align-items: center; }
 .foot-actions { gap: 4px 12px; }
+
+.pic-banner { display: block; width: 120px; height: 56px; background-size: cover; background-position: center; border: 1px solid var(--rule); }
+.head.banner.drop-over { outline: 2px dashed var(--signal); outline-offset: -6px; }
