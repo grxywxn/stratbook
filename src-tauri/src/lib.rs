@@ -128,6 +128,41 @@ fn export_data_url(app: AppHandle, name: String, data_url: String) -> Result<Str
     Ok(path.display().to_string())
 }
 
+/// Open (or reuse) a second window that browses the web, so pictures can be
+/// found and dragged or copied into Stratbook. That window gets no access to
+/// Stratbook's commands; it is just a browser.
+#[tauri::command]
+async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed = tauri::Url::parse(&url).map_err(|e| e.to_string())?;
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return Err("only web addresses can be opened".into());
+    }
+    if let Some(win) = app.get_webview_window("web") {
+        win.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "web", tauri::WebviewUrl::External(parsed))
+        .title("Stratbook web search: drag a picture into Stratbook, or right-click and Copy image")
+        .inner_size(820.0, 880.0)
+        .min_inner_size(420.0, 400.0)
+        .theme(Some(tauri::Theme::Dark));
+    // Open beside the main window when there is room.
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size), Ok(Some(mon))) = (main.outer_position(), main.outer_size(), main.current_monitor()) {
+            let scale = mon.scale_factor();
+            let right = (pos.x as f64 + size.width as f64) / scale;
+            let screen_w = (mon.position().x as f64 + mon.size().width as f64) / scale;
+            let x = if right + 420.0 <= screen_w { right - 10.0 } else { (screen_w - 830.0).max(0.0) };
+            builder = builder.position(x, pos.y as f64 / scale);
+        }
+    }
+    builder.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Download an image from a web address (used when a link, not a file, is
 /// dragged onto the app). Returns it as a data URL.
 #[tauri::command]
@@ -215,7 +250,8 @@ pub fn run() {
             data_path,
             export_text,
             export_data_url,
-            fetch_image
+            fetch_image,
+            open_web
         ])
         .run(tauri::generate_context!())
         .expect("error while running Stratbook");

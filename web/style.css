@@ -598,3 +598,6 @@ input[type="color"] { width: 42px; height: 28px; padding: 0 2px; background: var
 .pic-x { position: absolute; top: 2px; right: 6px; font-size: 16px; color: var(--ink-3); }
 .pic-x:hover { color: var(--bad); }
 .op-big.drop-over, .gun-art.drop-over { outline: 2px dashed var(--signal); outline-offset: 4px; }
+
+.web-bar { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 12px; background: var(--raise); border: 1px solid var(--rule-2); }
+.web-bar .web-in { flex: 1; font-size: 14px; }

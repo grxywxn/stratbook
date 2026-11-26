@@ -81,7 +81,12 @@ window.Store = (() => {
     return await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = rej; fr.readAsDataURL(b); });
   }
 
-  return { native, fetchImage, load, save, putBlob, getBlob, cachedBlob, delBlob, exportText, exportImage, dataPath, onClose };
+  async function openWeb(url) {
+    if (native) return invoke('open_web', { url });
+    window.open(url, 'stratbook-web', 'width=820,height=880');
+  }
+
+  return { native, fetchImage, openWeb, load, save, putBlob, getBlob, cachedBlob, delBlob, exportText, exportImage, dataPath, onClose };
 })();
 
 // Shrink an image (a File/Blob or a data URL) to a compact WebP data URL.

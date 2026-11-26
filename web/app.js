@@ -1113,6 +1113,32 @@ const PIC = {
   weapons: { label: 'weapons', max: 480, q: 0.85, prefix: 'wpn-', list: () => db.weapons.slice().sort((a, b) => ARSENAL.typeOrder.indexOf(a.type) - ARSENAL.typeOrder.indexOf(b.type) || byName(a, b)), art: w => weaponArt(w, 104, 36), sub: w => typeInfo(w.type).label }
 };
 
+const ENGINES = {
+  bing: { label: 'Bing Images', url: q => 'https://www.bing.com/images/search?q=' + encodeURIComponent(q) },
+  ddg: { label: 'DuckDuckGo', url: q => 'https://duckduckgo.com/?ia=images&iax=images&q=' + encodeURIComponent(q) },
+  google: { label: 'Google Images', url: q => 'https://www.google.com/search?tbm=isch&q=' + encodeURIComponent(q) }
+};
+
+// Search box value is a web address -> open it; otherwise search for it.
+async function webSearch(text) {
+  const t = (text || '').trim();
+  if (!t) return;
+  const looksLikeUrl = /^https?:\/\//i.test(t) || /^[\w-]+(\.[\w-]+)+(\/\S*)?$/.test(t);
+  const url = looksLikeUrl ? (/^https?:/i.test(t) ? t : 'https://' + t) : ENGINES[ui.engine || 'bing'].url(t);
+  try { await Store.openWeb(url); } catch (e) { toast('Could not open the web window: ' + (e.message || e)); }
+}
+
+function webBar(defaultQuery) {
+  const input = h('input', { class: 'in web-in', id: 'webQuery', type: 'text', value: defaultQuery || '', placeholder: 'Search the web, or paste a web address',
+    onkeydown: e => { if (e.key === 'Enter') { e.preventDefault(); webSearch(input.value); } } });
+  return h('div', { class: 'web-bar' },
+    h('span', { class: 'lbl', text: 'Web' }),
+    input,
+    h('select', { value: ui.engine || 'bing', onchange: e => { ui.engine = e.target.value; } },
+      Object.entries(ENGINES).map(([k, v]) => h('option', { value: k, text: v.label }))),
+    h('button', { class: 'btn primary', text: 'Search', onclick: () => webSearch(input.value) }));
+}
+
 function looksLikeImageFile(f) { return f && (f.type.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(f.name)); }
 
 // Turn whatever was dropped or pasted into a list of { src, name }:
@@ -1232,9 +1258,11 @@ function renderPictures(kind) {
           h('a', { class: 'segl' + (kind === 'weapons' ? ' on' : ''), href: '#/pictures/weapons', text: 'Weapons' })))),
     h('section', { class: 'detail', id: 'picDetail', style: 'flex:1' }, h('div', { class: 'ed pics' },
       h('ol', { class: 'pic-steps' },
-        h('li', {}, h('b', { text: 'Drag and drop. ' }), 'Open R6Calls or a wiki in your browser next to this window and drag a picture onto its tile.'),
+        h('li', {}, h('b', { text: 'Search. ' }), 'Click a tile, then Search: a web window opens beside this one with results for it. Or type any site, like a wiki.'),
+        h('li', {}, h('b', { text: 'Drag and drop. ' }), 'Drag a picture from the web window (or any browser) onto its tile.'),
         h('li', {}, h('b', { text: 'Or copy and paste. ' }), 'Right-click a picture, choose Copy image, then press ', h('kbd', { text: 'Ctrl V' }), ' here. It goes on the selected tile.'),
         h('li', {}, 'After each one, the next empty tile is selected for you.')),
+      webBar((() => { const it = all.find(x => x.id === ui.picSel); return it ? it.name + (kind === 'ops' ? ' Rainbow Six Siege operator' : ' Rainbow Six Siege') : ''; })()),
       zone,
       h('div', { class: 'pic-tools' },
         h('div', { class: 'seg' },
@@ -1561,6 +1589,7 @@ $('#finderInput').addEventListener('input', e => runFinder(e.target.value));
 $('#finder').addEventListener('mousedown', e => { if (e.target.id === 'finder') closeFinder(); });
 $('#findBtn').addEventListener('click', openFinder);
 $('#exportBtn').addEventListener('click', exportData);
+$('#webBtn').addEventListener('click', async () => { const q = await ask('Search the web', ''); if (q) webSearch(q); });
 $('#importBtn').addEventListener('click', () => $('#importFile').click());
 $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
 window.addEventListener('hashchange', route);
