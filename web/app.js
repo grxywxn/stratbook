@@ -2507,6 +2507,12 @@ let ubiSyncing = false;
 async function syncUbi(manual) {
   const u = ubiState();
   if (!u.connected || ubiSyncing) return;
+  // After Ubisoft says "too many attempts", stay quiet for 30 minutes.
+  if (!manual && u.pausedUntil && Date.now() < u.pausedUntil) return;
+  if (manual && u.pausedUntil && Date.now() < u.pausedUntil) {
+    toast(`Ubisoft asked Stratbook to slow down. Try again in about ${Math.ceil((u.pausedUntil - Date.now()) / 60000)} minutes.`);
+    return;
+  }
   ubiSyncing = true;
   try {
     const boards = parseUbi(await ubiApi.stats());
@@ -2549,6 +2555,7 @@ async function syncUbi(manual) {
     if (!busy && ['', '#/', '#/home', '#/tracker', '#/tracker/matches', '#/tracker/ops', '#/tracker/maps', '#/tracker/daily'].includes(hsh)) route();
   } catch (e) {
     u.lastError = e.message || String(e);
+    if (/too many/i.test(u.lastError)) u.pausedUntil = Date.now() + 30 * 60 * 1000;
     save();
     if (manual) toast(u.lastError);
     if (/session expired/i.test(u.lastError)) { u.connected = false; save(); }
@@ -2586,6 +2593,11 @@ function connectUbiDialog() {
   const close = () => overlay.remove();
   const form = h('form', { class: 'modal-box ubi-box', onsubmit: async e => {
     e.preventDefault();
+    const uu = ubiState();
+    if (uu.pausedUntil && Date.now() < uu.pausedUntil) {
+      err.textContent = `Ubisoft blocked sign-ins for a while after too many attempts. Wait about ${Math.ceil((uu.pausedUntil - Date.now()) / 60000)} more minutes, then try once.`;
+      return;
+    }
     err.textContent = ''; ok.disabled = true; ok.textContent = 'Connecting…';
     try {
       const r = tfa ? await ubiApi.login2fa(tfa.twoFactorTicket, code.value, tfa.appId) : await ubiApi.login(email.value.trim(), pass.value);
@@ -2603,6 +2615,7 @@ function connectUbiDialog() {
       route();
     } catch (e2) {
       err.textContent = e2.message || String(e2);
+      if (/too many/i.test(err.textContent)) { ubiState().pausedUntil = Date.now() + 30 * 60 * 1000; save(); }
       ok.disabled = false; ok.textContent = tfa ? 'Verify' : 'Connect';
     }
   } },

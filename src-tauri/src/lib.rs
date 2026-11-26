@@ -249,7 +249,7 @@ fn ubi_error(code: u16, body: &str) -> String {
     let err = v.get("errorCode").and_then(|m| m.as_i64()).unwrap_or(0);
     match (code, err) {
         (401, _) | (_, 1) | (_, 3) | (_, 1003) => format!("Ubisoft rejected the sign-in: wrong email, password or code. ({code} {err} {msg})"),
-        (429, _) | (_, 1100) => "Ubisoft says there were too many attempts. Wait a few minutes and try again.".into(),
+        (429, _) | (_, 1100) => "Ubisoft says there were too many sign-in attempts. Stratbook will pause syncing for 30 minutes; wait at least that long before connecting again.".into(),
         _ => format!("Ubisoft returned an error ({code}{}): {}", if err != 0 { format!(", code {err}") } else { String::new() }, if msg.is_empty() { body.chars().take(200).collect() } else { msg }),
     }
 }
@@ -386,7 +386,13 @@ async fn ubi_fetch_stats(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut s = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
         // The stats service only takes a session made with the Siege client's app id.
-        if s["appId"].as_str() != Some(UBI_STATS_APP_ID) {
+        // Try to switch at most once every 30 minutes so a failure can't add to
+        // Ubisoft's limit on sign-in attempts.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let tried = s["statsRenewTried"].as_u64().unwrap_or(0);
+        if s["appId"].as_str() != Some(UBI_STATS_APP_ID) && now.saturating_sub(tried) > 1800 {
+            s["statsRenewTried"] = serde_json::json!(now);
+            let _ = ubi_write(&app, &s);
             let remember = s["rememberMeTicket"].as_str().unwrap_or("").to_string();
             if !remember.is_empty() {
                 if let Ok(reply) = ubi_session_call(&format!("rm_v1 t={remember}"), UBI_STATS_APP_ID, None) {
