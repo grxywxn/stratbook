@@ -88,6 +88,15 @@ function pickImage() {
   });
 }
 
+function pickImages() {
+  return new Promise(resolve => {
+    const input = $('#imagesFile');
+    input.value = '';
+    input.onchange = () => resolve([...input.files]);
+    input.click();
+  });
+}
+
 /* ================= data ================= */
 
 let db;
@@ -273,7 +282,9 @@ function renderOpsRail(activeId) {
     atk.map(item),
     h('div', { class: 'rail-label' }, h('span', { text: 'Defense' }), h('span', { text: String(def.length) })),
     def.map(item),
-    h('div', { class: 'rail-label' }, h('button', { class: 'link', text: '+ Add operator', onclick: addOperator }))
+    h('div', { class: 'rail-label col' },
+      h('button', { class: 'link', text: '+ Add operator', onclick: addOperator }),
+      h('button', { class: 'link', text: '+ Import icon pack', title: 'Pick many images at once; each is matched to an operator by its file name', onclick: importIconPack }))
   ]);
 }
 
@@ -733,6 +744,51 @@ async function importBlueprint(map, floor) {
   }
 }
 
+/* ---------- bulk operator icons ---------- */
+
+// Match image files to operators by file name, e.g. "thatcher.png",
+// "R6S-icon-Thatcher.webp" or "operator_solid_snake.png".
+function matchOperator(fileName) {
+  const tokens = slug(fileName.replace(/\.[^.]+$/, '')).split('-').filter(Boolean);
+  const ops = [...db.operators].sort((a, b) => b.id.length - a.id.length);
+  return ops.find(o => {
+    const want = o.id.split('-');
+    for (let i = 0; i + want.length <= tokens.length; i++) {
+      if (want.every((t, j) => tokens[i + j] === t)) return true;
+    }
+    return false;
+  }) || null;
+}
+
+async function importIconPack() {
+  const files = await pickImages();
+  if (!files.length) return;
+  let done = 0;
+  const missed = [];
+  for (const f of files) {
+    const op = matchOperator(f.name);
+    if (!op) { missed.push(f.name); continue; }
+    try {
+      const { url } = await shrinkImage(f, 128, 0.9);
+      const key = slug('op-' + op.id) || 'op-' + uid();
+      await Store.putBlob(key, url);
+      op.img = key;
+      done++;
+    } catch (e) { missed.push(f.name); }
+  }
+  save();
+  route();
+  toast(`Set ${done} operator icon${done === 1 ? '' : 's'}` + (missed.length ? `. No match for ${missed.length}: ${missed.slice(0, 6).join(', ')}${missed.length > 6 ? '…' : ''}` : '.'));
+}
+
+async function resetIcons() {
+  const withImg = db.operators.filter(o => o.img);
+  if (!withImg.length) return;
+  if (!(await confirmBox('Go back to emblems for every operator?', `Removes ${withImg.length} custom picture${withImg.length > 1 ? 's' : ''}.`, 'Reset', true))) return;
+  for (const o of withImg) { await Store.delBlob(o.img).catch(() => {}); o.img = null; }
+  save(); route();
+}
+
 /* ================= operators ================= */
 
 function renderOp(op) {
@@ -806,7 +862,9 @@ function renderOp(op) {
     op.img ? h('button', { class: 'link', text: 'Back to the emblem', onclick: async () => {
       await Store.delBlob(op.img).catch(() => {});
       op.img = null; save(); route();
-    } }) : null);
+    } }) : null,
+    h('button', { class: 'link', text: 'Import icon pack', onclick: importIconPack }),
+    db.operators.some(o => o.img) ? h('button', { class: 'link', text: 'Reset all to emblems', onclick: resetIcons }) : null);
 
   const ed = h('div', { class: 'ed' },
     section('Role and loadout', null, h('div', {},
@@ -822,7 +880,7 @@ function renderOp(op) {
     section('Good on', 'Maps where you like them', mapChips),
     section('In your strats', null, usesList),
     section('Notes', null, area('notes', 'Anything else', 'notes')),
-    section('Icon', 'An original emblem is drawn for every operator. You can use your own picture instead.', iconActions),
+    section('Icon', 'Use your own picture, or import a whole pack: select all the images at once and each is matched to an operator by file name.', iconActions),
     section('Operator', 'Rename, change side, or remove', h('div', { class: 'ed-meta' },
       h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Name' }), nameIn),
       h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Side' }), sideSel),

@@ -475,3 +475,5 @@ a.bar-row:hover .bar-lbl { color: var(--signal); }
 .seg-part.retired { background: var(--rule-2); color: var(--ink-2); }
 
 .empty.small { padding: 18px 20px; }
+
+.rail-label.col { flex-direction: column; align-items: flex-start; gap: 8px; }
