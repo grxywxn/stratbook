@@ -120,8 +120,14 @@ function seedLoadout(opName) {
 }
 
 function freshDB() {
+  const sens = defaultSens();
   return {
-    version: 3,
+    version: 4,
+    settings: defaultSettings(),
+    profile: defaultProfile(),
+    sens, sensCurrent: sens[sens.length - 1].id,
+    sessions: [],
+    goals: defaultGoals(),
     weapons: seedWeapons(),
     gadgets: seedGadgets(),
     maps: SEED.maps.map(([name, sites]) => ({ id: slug(name), name, sites: [...sites], floors: makeFloors(name), callouts: {} })),
@@ -136,7 +142,7 @@ function freshDB() {
 
 function normalize(d) {
   if (!d || typeof d !== 'object') return freshDB();
-  d.version = 3;
+  d.version = 4;
   d.maps = Array.isArray(d.maps) ? d.maps : [];
   d.operators = Array.isArray(d.operators) ? d.operators : [];
   if (!Array.isArray(d.weapons)) d.weapons = seedWeapons();
@@ -145,6 +151,11 @@ function normalize(d) {
     if (!o.loadout) o.loadout = seedLoadout(o.name);
     for (const k of ['primaries', 'secondaries', 'gadgets']) if (!Array.isArray(o.loadout[k])) o.loadout[k] = [];
   }
+  d.settings = Object.assign(defaultSettings(), d.settings || {});
+  d.profile = mergeDeep(defaultProfile(), d.profile || {});
+  if (!Array.isArray(d.sens)) { d.sens = defaultSens(); d.sensCurrent = d.sens[d.sens.length - 1].id; }
+  if (!Array.isArray(d.sessions)) d.sessions = [];
+  if (!Array.isArray(d.goals)) d.goals = defaultGoals();
   for (const g of Object.values(d.guides || {})) {
     g.pick = g.pick || { primary: '', secondary: '', gadget: '' };
     if (g.attach == null) g.attach = [g.primary, g.secondary, g.gadget].filter(Boolean).join(' · ');
@@ -217,6 +228,10 @@ async function load() {
   db = normalize(d);
   // Custom operator pictures are tiny; load them up front so icons draw instantly.
   await Promise.all([...db.operators, ...db.weapons, ...db.maps.map(m => ({ img: m.banner }))].filter(o => o.img).map(o => Store.getBlob(o.img).catch(() => null)));
+  const p = db.profile;
+  await Promise.all([p.avatar, p.banner, ...Object.values(p.gear).map(g => g.img)].filter(Boolean).map(k => Store.getBlob(k).catch(() => null)));
+  applySettings();
+  paintNavAvatar();
   if (!d) save(true); else setSaveState('Saved');
 }
 
@@ -251,13 +266,28 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) flush
 let board = null;
 function go(hash) { if (location.hash !== hash) location.hash = hash; else route(); }
 
+let lastView = '';
 function route() {
   if (board) { board.destroy(); board = null; }
-  const [view, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : a === 'maps' ? 'maps' : 'ops') : ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
-  document.querySelector('.main').style.removeProperty('--map');
+  const [view0, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
+  const view = view0 || 'home';
+  const solo = ['home', 'progress', 'sens', 'profile', 'settings'];
+  const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : a === 'maps' ? 'maps' : 'ops')
+    : solo.includes(view) || ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
+  const main = document.querySelector('.main');
+  main.style.removeProperty('--map');
   document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
-  if (view === 'pictures') {
+  $('#app').classList.toggle('no-rail', solo.includes(view));
+  // Play the page-enter animation when the page (not just a detail) changes.
+  const pageKey = view + '/' + (a || '');
+  if (pageKey !== lastView) { main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter'); lastView = pageKey; }
+  else main.classList.remove('enter');
+  if (view === 'home') renderHome();
+  else if (view === 'progress') renderProgress();
+  else if (view === 'sens') renderSens();
+  else if (view === 'profile') renderProfile();
+  else if (view === 'settings') renderSettings();
+  else if (view === 'pictures') {
     if (a === 'weapons') renderArsenalRail(); else if (a === 'maps') renderMapsRail(); else renderOpsRail();
     renderPictures(PIC[a] ? a : 'ops');
   } else if (tab === 'ops') {
@@ -275,7 +305,7 @@ function route() {
     const map = mapById(a);
     renderMapsRail(map && map.id);
     if (!map) { renderMapsHome(); return; }
-    document.querySelector('.main').style.setProperty('--map', mapColor(map));
+    main.style.setProperty('--map', mapColor(map));
     if (b === 'blueprints') renderBlueprints(map, c);
     else renderMap(map, b === 's' ? c : null, d === 'board');
   }
@@ -1590,6 +1620,562 @@ function importData(file) {
   reader.readAsText(file);
 }
 
+/* ================= settings, profile, sensitivity, progress ================= */
+
+const FONTS = [
+  ['system', 'Segoe UI (default)', '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'],
+  ['bahnschrift', 'Bahnschrift', 'Bahnschrift, "Segoe UI", sans-serif'],
+  ['verdana', 'Verdana (wide, easy to read)', 'Verdana, Geneva, sans-serif'],
+  ['tahoma', 'Tahoma', 'Tahoma, "Segoe UI", sans-serif'],
+  ['trebuchet', 'Trebuchet MS', '"Trebuchet MS", "Segoe UI", sans-serif'],
+  ['calibri', 'Calibri', 'Calibri, Carlito, "Segoe UI", sans-serif'],
+  ['arial', 'Arial', 'Arial, Helvetica, sans-serif'],
+  ['georgia', 'Georgia (serif)', 'Georgia, "Times New Roman", serif'],
+  ['consolas', 'Consolas (monospace)', 'Consolas, "Cascadia Mono", monospace']
+];
+const ACCENTS = ['#f5b544', '#ff7a45', '#f0566a', '#ec6fb5', '#9b7cf6', '#4e9ff0', '#2fc4b2', '#5ccf7a'];
+
+function defaultSettings() {
+  return { theme: 'dark', accent: '#f5b544', font: 'system', headingFont: 'system', fontSize: 15, density: 'comfortable', motion: true, contrast: false };
+}
+
+function applySettings() {
+  const st = db.settings, root = document.documentElement;
+  root.dataset.theme = st.theme;
+  root.dataset.density = st.density;
+  root.dataset.motion = st.motion ? 'on' : 'off';
+  root.dataset.contrast = st.contrast ? 'high' : 'normal';
+  const font = (FONTS.find(f => f[0] === st.font) || FONTS[0])[2];
+  const head = (FONTS.find(f => f[0] === st.headingFont) || FONTS.find(f => f[0] === st.font) || FONTS[0])[2];
+  root.style.setProperty('--fs', Math.max(11, Math.min(24, +st.fontSize || 15)) + 'px');
+  root.style.setProperty('--font', font);
+  root.style.setProperty('--font-display', head);
+  root.style.setProperty('--accent', st.accent);
+  // Pick dark or light text for buttons filled with the accent colour.
+  const m = /^#?([0-9a-f]{6})$/i.exec(st.accent);
+  if (m) {
+    const n = parseInt(m[1], 16), r = (n >> 16) / 255, g = (n >> 8 & 255) / 255, b = (n & 255) / 255;
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    root.style.setProperty('--accent-ink', lum > 0.55 ? '#1a1406' : '#ffffff');
+  }
+}
+
+function mergeDeep(base, over) {
+  for (const [k, v] of Object.entries(over || {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) base[k] = mergeDeep(base[k], v);
+    else base[k] = v;
+  }
+  return base;
+}
+
+const GEAR = [
+  ['mouse', 'Mouse', 'M7 3h10v6H7zM12 3v6M6 9h12v6a6 6 0 0 1-12 0z'],
+  ['mousepad', 'Mousepad', 'M3 6h18v12H3z'],
+  ['keyboard', 'Keyboard', 'M2 7h20v10H2zM6 11h.01M10 11h.01M14 11h.01M18 11h.01M7 14h10'],
+  ['headset', 'Headset', 'M4 14v-2a8 8 0 0 1 16 0v2M4 14h3v6H4zM17 14h3v6h-3z'],
+  ['monitor', 'Monitor', 'M3 4h18v12H3zM8 20h8M12 16v4'],
+  ['mic', 'Microphone', 'M9 3h6v10H9zM5 11a7 7 0 0 0 14 0M12 18v3']
+];
+
+function defaultProfile() {
+  return {
+    name: '', tag: '', platform: 'PC', region: '', rank: '', peak: '', role: '', aim: 'Wrist', hours: '', bio: '',
+    avatar: null, banner: null,
+    mainsAtk: [], mainsDef: [],
+    gear: {
+      mouse: { name: '', notes: '2000 DPI', img: null },
+      mousepad: { name: '', notes: '', img: null },
+      keyboard: { name: 'MADLIONS MAD 60 HE', notes: '60%, Hall effect, rapid trigger', img: null },
+      headset: { name: '', notes: '', img: null },
+      monitor: { name: '', notes: '', img: null },
+      mic: { name: '', notes: '', img: null }
+    },
+    specs: { cpu: '', gpu: '', ram: '', storage: '', board: '', os: 'Windows', internet: '' },
+    game: { resolution: '', aspect: '5:4', fov: '90', display: 'Fullscreen', fps: '250–300', preset: '', brightness: '', vsync: 'Off', reflex: '', ads: 'Hold', lean: 'Toggle', crouch: 'Hold (Ctrl)', prone: 'Toggle (C)' },
+    audio: { range: '', master: '', voice: '', notes: '' },
+    keybinds: [
+      ['Move', 'W A S D'], ['Lean left / right', 'Q / E'], ['Sprint', 'Left Shift'], ['Crouch (hold)', 'Left Ctrl'],
+      ['Prone (toggle)', 'C'], ['Interact / reinforce', 'F'], ['Vault / rappel', 'Space'], ['Reload', 'R'],
+      ['Melee', 'V'], ['Secondary gadget', 'G or Mouse 5'], ['Operator ability', 'X or Mouse 4'], ['Drone / cameras', 'T'],
+      ['Fire mode', 'B'], ['Push to talk', 'Caps Lock'], ['Ping', 'Middle mouse'], ['Scoreboard', 'Tab']
+    ],
+    keyboard: [
+      ['W A S D', '0.8–1.0 mm', '0.20 mm', '0.15 mm', 'Quick reset on'],
+      ['Q / E', '1.2 mm', '0.30 mm', '0.30 mm', 'Quick reset off'],
+      ['Ctrl (crouch)', '1.0 mm', '0.20 mm', '0.20 mm', 'Quick reset on'],
+      ['Shift (sprint)', '1.2 mm', 'Off', 'Off', ''],
+      ['Everything else', '1.5–2.0 mm', 'Off', 'Off', 'Top dead zone 0.15 mm, bottom 0.2 mm']
+    ]
+  };
+}
+
+function defaultSens() {
+  return [
+    { id: 'sens-before', label: 'Before the change', date: '2026-11-12', dpi: 2000, h: 17, v: 17, mult: 0.02, fov: 90, ads: { '1x': 40, '2.5x': 55, '3.5x': 64, '8x': 73 }, rating: 2, note: 'Recoil was hard to control at this speed.' },
+    { id: 'sens-rec', label: 'New setup', date: '2026-11-12', dpi: 2000, h: 9, v: 9, mult: 0.008, fov: 90, ads: { '1x': 50, '2.5x': 50, '3.5x': 50, '8x': 50 }, rating: 0, note: 'About 22 cm/360. Give it a week before judging. Change this if you went with something else.' }
+  ];
+}
+
+function defaultGoals() {
+  return [
+    { id: uid(), text: 'Learn every Clubhouse callout', done: false },
+    { id: uid(), text: 'Play a week on the new sensitivity before changing it', done: false }
+  ];
+}
+
+const SCOPES = ['1x', '2.5x', '3.5x', '8x'];
+function cm360(e) {
+  const degPerInch = (+e.dpi || 0) * (+e.h || 0) * ((+e.mult || 0.02) / 0.02) * 0.00572958;
+  return degPerInch > 0 ? 360 / degPerInch * 2.54 : 0;
+}
+const edpi = e => Math.round((+e.dpi || 0) * (+e.h || 0) * ((+e.mult || 0.02) / 0.02));
+const fmtDate = iso => { try { return new Date(iso + (iso.length === 10 ? 'T12:00:00' : '')).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }); } catch (e) { return iso; } };
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const currentSens = () => db.sens.find(e => e.id === db.sensCurrent) || db.sens[db.sens.length - 1];
+const playerName = () => db.profile.name || db.profile.tag || 'Player';
+const initials = () => playerName().split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+
+function paintNavAvatar() {
+  const el = $('#navAvatar');
+  if (!el) return;
+  const img = db.profile.avatar && Store.cachedBlob(db.profile.avatar);
+  el.replaceChildren(img ? h('img', { src: img, alt: '' }) : document.createTextNode(initials()));
+}
+
+// A line chart drawn in SVG. points: [{ y, label }] in order.
+function lineChart(points, opts = {}) {
+  const pts = points.filter(p => Number.isFinite(p.y));
+  if (pts.length < 2) return h('div', { class: 'chart-empty', text: opts.empty || 'Log at least two entries to see a chart.' });
+  const W = 760, H = opts.height || 200, L = 44, R = 14, T = 14, B = 28;
+  let lo = Math.min(...pts.map(p => p.y)), hi = Math.max(...pts.map(p => p.y));
+  if (opts.min != null) lo = Math.min(lo, opts.min);
+  if (lo === hi) { lo -= 1; hi += 1; }
+  const padY = (hi - lo) * 0.12; lo -= padY; hi += padY;
+  const X = i => L + (W - L - R) * (pts.length === 1 ? 0.5 : i / (pts.length - 1));
+  const Y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  const color = opts.color || 'var(--accent)';
+  const span = hi - lo;
+  const fmt = opts.fmt || (v => span > 20 ? Math.round(v) : Math.round(v * 10) / 10);
+  const gid = 'g' + uid();
+  const ticks = [0, 1, 2, 3].map(k => lo + (hi - lo) * k / 3);
+  const path = pts.map((p, i) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(p.y).toFixed(1)).join(' ');
+  const area = path + ` L${X(pts.length - 1).toFixed(1)} ${H - B} L${X(0).toFixed(1)} ${H - B} Z`;
+  const labelIdx = [...new Set([0, Math.floor((pts.length - 1) / 2), pts.length - 1])];
+  const esc = Icons.esc;
+  const svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(opts.title || 'chart')}">
+<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${color}" stop-opacity=".28"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs>
+<g class="grid">${ticks.map(t => `<line x1="${L}" x2="${W - R}" y1="${Y(t).toFixed(1)}" y2="${Y(t).toFixed(1)}"/>`).join('')}</g>
+<g class="axis">${ticks.map(t => `<text x="${L - 8}" y="${(Y(t) + 4).toFixed(1)}" text-anchor="end">${esc(fmt(t))}</text>`).join('')}
+${labelIdx.map(i => `<text x="${X(i).toFixed(1)}" y="${H - 6}" text-anchor="${i === 0 ? 'start' : i === pts.length - 1 ? 'end' : 'middle'}">${esc(pts[i].label || '')}</text>`).join('')}</g>
+<path d="${area}" fill="url(#${gid})"/>
+<path class="line" d="${path}" stroke="${color}"/>
+${pts.map((p, i) => `<circle class="dot" cx="${X(i).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="4.5" fill="${color}"><title>${esc((p.label ? p.label + ': ' : '') + fmt(p.y) + (opts.unit || ''))}</title></circle>`).join('')}
+</svg>`;
+  const wrap = h('div', {});
+  wrap.innerHTML = svg;
+  return wrap.firstElementChild;
+}
+
+// Image slot used for avatar, banner and gear: click to choose, drop, or paste while hovering.
+let hoverSlot = null;
+function imageSlot(el, { get, set, max = 512, q = 0.86, key }) {
+  const apply = async src => {
+    const { url } = await shrinkImage(src, max, q);
+    const old = get();
+    await Store.putBlob(key, url);
+    if (old && old !== key) Store.delBlob(old).catch(() => {});
+    set(key); save(); route(); paintNavAvatar();
+  };
+  el.addEventListener('click', async e => { if (e.target.closest('input,button:not(.slot-btn)')) return; const f = await pickImage(); if (f) apply(f); });
+  el.addEventListener('mouseenter', () => { hoverSlot = apply; });
+  el.addEventListener('mouseleave', () => { if (hoverSlot === apply) hoverSlot = null; });
+  acceptImageDrop(el, async imgs => apply(imgs[0].src));
+  return el;
+}
+document.addEventListener('paste', async e => {
+  if (!hoverSlot || typing(e)) return;
+  try { const imgs = await imagesFrom(e.clipboardData); if (imgs.length) { e.preventDefault(); await hoverSlot(imgs[0].src); } } catch (err) { toast('Could not use that image: ' + (err.message || err)); }
+});
+
+function field(obj, key, label, opts = {}) {
+  const input = opts.options
+    ? h('select', { value: obj[key] || '', onchange: e => { obj[key] = e.target.value; save(); opts.onchange && opts.onchange(); } },
+        opts.options.map(o => h('option', { value: o, text: o || '—' })))
+    : h('input', { class: 'in', type: opts.type || 'text', value: obj[key] ?? '', placeholder: opts.ph || '', step: opts.step,
+        oninput: e => { obj[key] = opts.type === 'number' ? (e.target.value === '' ? '' : +e.target.value) : e.target.value; save(); opts.oninput && opts.oninput(); } });
+  return h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: label }), input);
+}
+
+function toggleCtl(checked, onchange) {
+  return h('label', { class: 'toggle' }, h('input', { type: 'checkbox', checked: checked || null, onchange: e => onchange(e.target.checked) }), h('span'));
+}
+
+/* ---------- home ---------- */
+
+function renderHome() {
+  const p = db.profile;
+  const banner = p.banner && Store.cachedBlob(p.banner);
+  const avatarImg = p.avatar && Store.cachedBlob(p.avatar);
+  const cur = currentSens();
+  const rounds = db.strats.flatMap(s => s.results);
+  const wins = rounds.filter(r => r.w).length;
+  const lastSession = [...db.sessions].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+  const hr = new Date().getHours();
+  const greet = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
+
+  const recent = [...db.strats].sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, 5);
+  const recentList = recent.length
+    ? h('div', { class: 'recent' }, recent.map(s => {
+        const m = mapById(s.mapId); const r = record(s);
+        return h('a', { href: '#/maps/' + s.mapId + '/s/' + s.id },
+          h('span', { class: 'thumb', style: m ? `background-image:${bannerUrl(m)}` : '' }),
+          h('span', {}, h('div', { class: 't', text: s.title || 'Untitled strat' }), h('div', { class: 's', text: (m ? m.name : '') + (s.site ? ' · ' + s.site : '') })),
+          h('span', { class: 'rec', text: r.n ? `${r.w}–${r.l}` : (s.side === 'atk' ? 'Attack' : 'Defense') }));
+      }))
+    : h('div', { class: 'chart-empty' }, 'No strats yet. ', h('a', { class: 'link strong', href: '#/maps', text: 'Pick a map to start one' }));
+
+  const goals = h('div', {}, db.goals.slice(0, 6).map(goalRow), db.goals.length ? null : h('p', { class: 'hint', text: 'No goals yet. Add some on the Progress page.' }));
+
+  const sessionsSorted = [...db.sessions].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const rpPoints = sessionsSorted.filter(s => s.rp !== '' && s.rp != null).map(s => ({ y: +s.rp, label: fmtDate(s.date) }));
+  const mains = [...p.mainsAtk, ...p.mainsDef].map(opById).filter(Boolean);
+
+  $('#main').replaceChildren(
+    h('div', { class: 'detail', style: 'flex:1' },
+      h('section', { class: 'hero', style: banner ? `background-image:linear-gradient(0deg, transparent, transparent), url("${banner}")` : '' },
+        h('div', { class: 'hero-row' },
+          h('a', { class: 'avatar', href: '#/profile' }, avatarImg ? h('img', { src: avatarImg, alt: '' }) : initials()),
+          h('div', {},
+            h('div', { class: 'hero-sub', style: 'margin:0 0 .2rem' }, greet),
+            h('div', { class: 'hero-name', text: playerName() }),
+            h('div', { class: 'hero-sub' },
+              p.rank ? h('span', { class: 'pill accent', text: p.rank }) : null,
+              h('span', { class: 'pill', text: cm360(cur).toFixed(1) + ' cm/360' }),
+              p.platform ? h('span', { class: 'pill', text: p.platform }) : null,
+              p.aim ? h('span', { class: 'pill', text: p.aim + ' aimer' }) : null)),
+          h('div', { class: 'hero-tools' },
+            h('a', { class: 'btn primary', href: '#/progress', text: 'Log a session' }),
+            h('a', { class: 'btn', href: '#/maps', text: 'Strats' }),
+            h('a', { class: 'btn', href: '#/profile', text: 'Edit profile' })))),
+      h('div', { class: 'ed', style: 'max-width:80rem' },
+        h('div', { class: 'tiles', style: 'margin-top:var(--gap)' },
+          h('div', { class: 'tile accent' }, h('div', { class: 'tile-big', text: cm360(cur).toFixed(1) }), h('div', { class: 'tile-small', text: 'cm/360 · ' + cur.label })),
+          h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: String(db.strats.length) }), h('div', { class: 'tile-small', text: db.strats.length === 1 ? 'strat written' : 'strats written' })),
+          h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: rounds.length ? pct(wins, rounds.length) + '%' : '–' }), h('div', { class: 'tile-small', text: rounds.length ? `strat win rate (${wins}–${rounds.length - wins})` : 'strat win rate' })),
+          h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: lastSession ? (lastSession.rank || lastSession.rp || '–') : '–' }), h('div', { class: 'tile-small', text: lastSession ? 'last session, ' + fmtDate(lastSession.date) : 'no sessions logged' }))),
+        h('div', { class: 'grid2' },
+          section('Pick up where you left off', null, recentList),
+          section('Goals', null, goals)),
+        h('div', { class: 'grid2' },
+          section('Rank points', 'From your logged sessions', lineChart(rpPoints, { empty: 'Log sessions with rank points to see your climb.' })),
+          section('Your mains', null, mains.length
+            ? h('div', { class: 'op-chips' }, mains.map(o => h('a', { class: 'op-chip ' + o.side, href: '#/ops/' + o.id }, Icons.opIcon(o, 34), h('span', { text: o.name }))))
+            : h('div', { class: 'chart-empty' }, 'Pick your mains on your ', h('a', { class: 'link strong', href: '#/profile', text: 'profile' }), '.'))))));
+}
+
+/* ---------- profile ---------- */
+
+function renderProfile() {
+  const p = db.profile;
+  const banner = p.banner && Store.cachedBlob(p.banner);
+  const avatarImg = p.avatar && Store.cachedBlob(p.avatar);
+  const refreshHero = () => {
+    const n = $('#heroName'); if (n) n.textContent = playerName();
+    paintNavAvatar();
+  };
+
+  const hero = h('section', { class: 'hero', title: 'Drop or paste a picture here for your banner', style: banner ? `background-image:url("${banner}")` : '' },
+    h('div', { class: 'hero-row' },
+      imageSlot(h('div', { class: 'avatar', title: 'Click, drop or paste a picture' }, avatarImg ? h('img', { src: avatarImg, alt: '' }) : initials()),
+        { get: () => p.avatar, set: k => { p.avatar = k; }, key: 'profile-avatar', max: 400 }),
+      h('div', {},
+        h('div', { class: 'hero-name', id: 'heroName', text: playerName() }),
+        h('div', { class: 'hero-sub' },
+          p.tag ? h('span', { class: 'pill', text: '@' + p.tag }) : null,
+          p.rank ? h('span', { class: 'pill accent', text: p.rank }) : null,
+          p.platform ? h('span', { class: 'pill', text: p.platform }) : null,
+          p.aim ? h('span', { class: 'pill', text: p.aim + ' aimer' }) : null)),
+      h('div', { class: 'hero-tools' },
+        h('button', { class: 'btn slot-btn', text: banner ? 'Change banner' : 'Add a banner', onclick: async e => { e.stopPropagation(); const f = await pickImage(); if (f) heroApply(f); } }),
+        banner ? h('button', { class: 'btn slot-btn', text: 'Remove banner', onclick: async e => { e.stopPropagation(); await Store.delBlob(p.banner).catch(() => {}); p.banner = null; save(); route(); } }) : null)));
+  const heroApply = async src => { const { url } = await shrinkImage(src, 1800, 0.84); await Store.putBlob('profile-banner', url); p.banner = 'profile-banner'; save(); route(); };
+  acceptImageDrop(hero, async imgs => heroApply(imgs[0].src));
+  hero.addEventListener('mouseenter', () => { hoverSlot = heroApply; });
+  hero.addEventListener('mouseleave', () => { if (hoverSlot === heroApply) hoverSlot = null; });
+
+  const mainsGrid = (side, key) => h('div', { class: 'mains' }, db.operators.filter(o => o.side === side).sort(byName).map(o => {
+    const on = p[key].includes(o.id);
+    return h('button', { class: 'main-pick' + (on ? ' on' : ''), title: on ? 'Remove from mains' : 'Add to mains', onclick: e => {
+      p[key] = on ? p[key].filter(x => x !== o.id) : [...p[key], o.id]; save();
+      e.currentTarget.classList.toggle('on');
+    } }, Icons.opIcon(o, 38), h('span', { text: o.name }));
+  }));
+
+  const gear = h('div', { class: 'gear-grid' }, GEAR.map(([k, label, icon]) => {
+    const g = p.gear[k] = p.gear[k] || { name: '', notes: '', img: null };
+    const img = g.img && Store.cachedBlob(g.img);
+    const slot = imageSlot(h('div', { class: 'gear-img' + (img ? ' has' : ''), title: 'Click, drop or paste a picture of your ' + label.toLowerCase() },
+      img ? h('img', { src: img, alt: '' }) : (() => { const s = h('span'); s.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="${icon}"/></svg>`; return s; })()),
+      { get: () => g.img, set: key => { g.img = key; }, key: 'gear-' + k, max: 360 });
+    return h('div', { class: 'gear-card' }, slot,
+      h('span', { class: 'gear-kind', text: label }),
+      h('input', { class: 'in', type: 'text', value: g.name, placeholder: 'Model', oninput: e => { g.name = e.target.value; save(); } }),
+      h('input', { class: 'in', type: 'text', value: g.notes, placeholder: 'Settings, notes', oninput: e => { g.notes = e.target.value; save(); } }));
+  }));
+
+  const table = (rows, cols, ph, onAdd) => {
+    const t = h('table', { class: 'kb-table' }, h('thead', {}, h('tr', {}, cols.map(c => h('th', { class: 'lbl', style: 'text-align:left;padding:0 .4rem .3rem', text: c })), h('th'))), h('tbody', {}, rows.map((row, ri) => h('tr', {},
+      cols.map((c, ci) => h('td', { class: ci === 1 && cols.length === 2 ? 'kb-key' : '' },
+        h('input', { class: 'in', type: 'text', value: row[ci] || '', placeholder: ph[ci], oninput: e => { row[ci] = e.target.value; save(); } }))),
+      h('td', { class: 'kb-x' }, h('button', { title: 'Remove row', text: '×', onclick: () => { rows.splice(ri, 1); save(); route(); } }))))));
+    return h('div', {}, t,
+      h('div', { class: 'loadout-foot' }, h('button', { class: 'btn', text: '+ Add row', onclick: () => { rows.push(cols.map(() => '')); save(); route(); } }), onAdd || null));
+  };
+
+  $('#main').replaceChildren(h('div', { class: 'detail', style: 'flex:1' },
+    hero,
+    h('div', { class: 'ed', style: 'max-width:80rem' },
+      section('Player', null, h('div', {},
+        h('div', { class: 'form-grid' },
+          field(p, 'name', 'Display name', { ph: 'What should Stratbook call you?', oninput: refreshHero }),
+          field(p, 'tag', 'Ubisoft username', { ph: 'In-game name' }),
+          field(p, 'platform', 'Platform', { options: ['PC', 'PlayStation', 'Xbox'] }),
+          field(p, 'region', 'Region', { ph: 'e.g. EU West' }),
+          field(p, 'rank', 'Current rank', { ph: 'e.g. Platinum 2' }),
+          field(p, 'peak', 'Peak rank', { ph: 'e.g. Emerald 4' }),
+          field(p, 'role', 'Role', { ph: 'e.g. Entry, support, anchor' }),
+          field(p, 'aim', 'Aim style', { options: ['Wrist', 'Arm', 'Hybrid', ''] }),
+          field(p, 'hours', 'Hours played', { ph: 'e.g. 900' })),
+        h('div', { style: 'margin-top:.8rem' }, h('span', { class: 'lbl block', text: 'About me' }),
+          h('textarea', { class: 'notes', value: p.bio, placeholder: 'Playstyle, what you are working on, anything', oninput: e => { p.bio = e.target.value; save(); } })))),
+      section('Attack mains', 'Click to pick', mainsGrid('atk', 'mainsAtk')),
+      section('Defense mains', 'Click to pick', mainsGrid('def', 'mainsDef')),
+      section('Gear', 'Click, drop or paste a picture on each box', gear),
+      h('div', { class: 'grid2' },
+        section('PC specs', null, h('div', { class: 'form-grid' },
+          field(p.specs, 'cpu', 'CPU'), field(p.specs, 'gpu', 'Graphics card'), field(p.specs, 'ram', 'RAM'),
+          field(p.specs, 'storage', 'Storage'), field(p.specs, 'board', 'Motherboard'), field(p.specs, 'os', 'Windows version'),
+          field(p.specs, 'internet', 'Internet / ping'))),
+        section('Audio', null, h('div', { class: 'form-grid' },
+          field(p.audio, 'range', 'Dynamic range', { options: ['', 'Night mode', 'Hi-fi', 'TV'] }),
+          field(p.audio, 'master', 'Master volume'), field(p.audio, 'voice', 'Voice chat volume'), field(p.audio, 'notes', 'Notes')))),
+      section('Game settings', 'What you run in Siege', h('div', { class: 'form-grid' },
+        field(p.game, 'resolution', 'Resolution', { ph: 'e.g. 1280×1024' }), field(p.game, 'aspect', 'Aspect ratio'),
+        field(p.game, 'fov', 'Field of view'), field(p.game, 'display', 'Display mode', { options: ['Fullscreen', 'Borderless', 'Windowed'] }),
+        field(p.game, 'fps', 'Frame rate'), field(p.game, 'preset', 'Graphics preset', { ph: 'e.g. Low, textures medium' }),
+        field(p.game, 'brightness', 'Brightness'), field(p.game, 'vsync', 'V-Sync', { options: ['Off', 'On'] }),
+        field(p.game, 'reflex', 'NVIDIA Reflex', { options: ['', 'Off', 'On', 'On + Boost'] }),
+        field(p.game, 'ads', 'Aim down sights', { options: ['Hold', 'Toggle'] }), field(p.game, 'lean', 'Lean', { options: ['Toggle', 'Hold'] }),
+        field(p.game, 'crouch', 'Crouch'), field(p.game, 'prone', 'Prone'),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'Sensitivity' }),
+          h('a', { class: 'btn', href: '#/sens', text: cm360(currentSens()).toFixed(1) + ' cm/360 · open tracker' })))),
+      section('Keybinds', null, table(p.keybinds, ['Action', 'Key'], ['Action', 'Key'])),
+      section('Keyboard setup', 'Actuation and rapid trigger per key (Hall effect keyboards)',
+        table(p.keyboard, ['Keys', 'Actuation', 'Rapid trigger press', 'Rapid trigger release', 'Notes'], ['Keys', 'Actuation', 'Press', 'Release', 'Notes'])))));
+}
+
+/* ---------- sensitivity ---------- */
+
+function renderSens() {
+  const cur = currentSens();
+  const draft = ui.sensDraft = ui.sensDraft || JSON.parse(JSON.stringify(cur));
+  draft.ads = draft.ads || {};
+
+  const out = {};
+  const readout = h('div', { class: 'readout' },
+    ['cm', 'in', 'edpi', 'cmp'].map(k => h('div', { class: 'tile' + (k === 'cm' ? ' accent' : '') },
+      out[k] = h('div', { class: 'tile-big' }), out[k + 'l'] = h('div', { class: 'tile-small' }))));
+  const paintReadout = () => {
+    const c = cm360(draft), was = cm360(cur);
+    out.cm.textContent = c ? c.toFixed(1) : '–'; out.cml.textContent = 'cm per 360°';
+    out.in.textContent = c ? (c / 2.54).toFixed(1) : '–'; out.inl.textContent = 'inches per 360°';
+    out.edpi.textContent = edpi(draft).toLocaleString(); out.edpil.textContent = 'eDPI (DPI × sens at the default multiplier)';
+    const diff = was ? (c - was) / was * 100 : 0;
+    out.cmp.textContent = Math.abs(diff) < 0.5 ? 'Same' : (diff > 0 ? 'Slower' : 'Faster');
+    out.cmpl.textContent = Math.abs(diff) < 0.5 ? 'as your current setup' : `${Math.abs(diff).toFixed(0)}% compared with your current setup`;
+  };
+  const num = (obj, key, label, step) => field(obj, key, label, { type: 'number', step: step || 'any', oninput: paintReadout });
+
+  const calc = section('Calculator', 'Change any value to see your cm/360. Nothing is saved until you press a button.', h('div', { class: 'calc' },
+    h('div', {},
+      h('div', { class: 'grid3' },
+        num(draft, 'dpi', 'Mouse DPI', 50), num(draft, 'h', 'Horizontal', 1), num(draft, 'v', 'Vertical', 1),
+        num(draft, 'mult', 'Multiplier (MouseSensitivityMultiplierUnit)'), num(draft, 'fov', 'Field of view', 1),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'Label' }),
+          h('input', { class: 'in', type: 'text', value: draft.label || '', placeholder: 'e.g. Slower test', oninput: e => { draft.label = e.target.value; } }))),
+      h('div', { class: 'lbl', style: 'margin:1rem 0 .4rem', text: 'Aim down sights' }),
+      h('div', { class: 'grid4' }, SCOPES.map(sc => num(draft.ads, sc, sc, 1))),
+      h('div', { class: 'loadout-foot' },
+        h('button', { class: 'btn primary', text: 'Save as a new setup', onclick: async () => {
+          const label = await ask('Name this setup', draft.label && draft.label !== cur.label ? draft.label : '');
+          if (label === null) return;
+          const e = { ...JSON.parse(JSON.stringify(draft)), id: uid(), label: label.trim() || 'Setup ' + (db.sens.length + 1), date: today(), rating: 0, note: '' };
+          db.sens.push(e); db.sensCurrent = e.id; ui.sensDraft = null; save(); route(); toast('Saved and set as your current sensitivity');
+        } }),
+        h('button', { class: 'btn', text: 'Update current setup', onclick: () => {
+          Object.assign(cur, JSON.parse(JSON.stringify(draft)), { id: cur.id, date: cur.date, note: cur.note, rating: cur.rating });
+          ui.sensDraft = null; save(); route(); toast('Current setup updated');
+        } }),
+        h('button', { class: 'link', text: 'Reset to current', onclick: () => { ui.sensDraft = null; route(); } }))),
+    h('div', {}, readout,
+      h('p', { class: 'hint', style: 'margin:.8rem 0 0' }, 'Most Siege players sit somewhere around 18–30 cm/360. Lower numbers are faster.'))));
+
+  const stars = e => h('span', { class: 'stars', title: 'How it felt' }, [1, 2, 3, 4, 5].map(k =>
+    h('button', { class: k <= (e.rating || 0) ? 'on' : '', text: '★', 'aria-label': k + ' stars', onclick: () => { e.rating = e.rating === k ? 0 : k; save(); route(); } })));
+
+  const history = [...db.sens].reverse().map(e => h('div', { class: 'sens-entry' + (e.id === cur.id ? ' current' : '') },
+    h('div', {},
+      h('div', { style: 'display:flex;align-items:baseline;gap:.7rem;flex-wrap:wrap' },
+        h('span', { class: 'big', text: cm360(e).toFixed(1) + ' cm' }),
+        h('b', { text: e.label || 'Setup' }),
+        e.id === cur.id ? h('span', { class: 'status works', text: 'Current' }) : null,
+        h('span', { class: 'hint', text: fmtDate(e.date) })),
+      h('div', { class: 'vals', text: `${e.dpi} DPI · ${e.h}/${e.v} · multiplier ${e.mult} · FOV ${e.fov} · ADS ${SCOPES.map(s => s + ' ' + ((e.ads || {})[s] ?? '–')).join(', ')}` })),
+    h('div', { class: 'acts' },
+      stars(e),
+      e.id !== cur.id ? h('button', { class: 'btn', text: 'Use this', onclick: () => { db.sensCurrent = e.id; ui.sensDraft = null; save(); route(); } }) : null,
+      h('button', { class: 'link', text: 'Load', title: 'Load into the calculator', onclick: () => { ui.sensDraft = JSON.parse(JSON.stringify(e)); route(); } }),
+      db.sens.length > 1 ? h('button', { class: 'danger', text: 'Delete', onclick: async () => {
+        if (!(await confirmBox('Delete "' + (e.label || 'Setup') + '"?', null, 'Delete', true))) return;
+        db.sens = db.sens.filter(x => x !== e); if (db.sensCurrent === e.id) db.sensCurrent = db.sens[db.sens.length - 1].id; save(); route();
+      } }) : null),
+    h('textarea', { class: 'note notes', style: 'min-height:3rem', value: e.note || '', placeholder: 'How did it feel? Recoil, flicks, holding angles…', oninput: ev => { e.note = ev.target.value; save(); } })));
+
+  const chartPts = db.sens.map(e => ({ y: +cm360(e).toFixed(2), label: (e.label || '') }));
+  $('#main').replaceChildren(
+    h('header', { class: 'head' }, h('div', { class: 'head-num' }),
+      h('div', {}, h('h1', { class: 'head-title', text: 'Sensitivity' }),
+        h('div', { class: 'head-sub' }, 'Current: ', h('b', { text: cm360(cur).toFixed(1) + ' cm/360' }), '·', cur.label)),
+      h('div', { class: 'head-tools' })),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed', style: 'max-width:80rem' },
+      calc,
+      section('Every setup you have tried', 'Newest first', h('div', {}, history)),
+      section('cm/360 over time', null, lineChart(chartPts, { unit: ' cm', empty: 'Save a second setup to see how your sensitivity changes.' })))));
+  paintReadout();
+}
+
+/* ---------- progress ---------- */
+
+function goalRow(g) {
+  return h('div', { class: 'goal' + (g.done ? ' done' : '') },
+    h('input', { type: 'checkbox', checked: g.done || null, onchange: e => { g.done = e.target.checked; save(); e.target.closest('.goal').classList.toggle('done', g.done); } }),
+    h('span', { class: 'text', text: g.text }),
+    h('button', { class: 'del', text: '×', title: 'Remove goal', onclick: () => { db.goals = db.goals.filter(x => x !== g); save(); route(); } }));
+}
+
+function renderProgress() {
+  const sessions = [...db.sessions].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const sum = k => sessions.reduce((n, s) => n + (+s[k] || 0), 0);
+  const kills = sum('kills'), deaths = sum('deaths'), wins = sum('wins'), losses = sum('losses');
+  const hsList = sessions.filter(s => s.hs !== '' && s.hs != null);
+  const avgHs = hsList.length ? hsList.reduce((n, s) => n + +s.hs, 0) / hsList.length : null;
+
+  const f = ui.sessionDraft = ui.sessionDraft || { date: today(), mode: 'Ranked', rank: db.profile.rank || '', rp: '', kills: '', deaths: '', wins: '', losses: '', hs: '', feel: '', notes: '' };
+  const form = h('div', {},
+    h('div', { class: 'log-form' },
+      field(f, 'date', 'Date', { type: 'date' }),
+      field(f, 'mode', 'Playlist', { options: ['Ranked', 'Unranked', 'Quick Match', 'Custom / scrim', 'Aim training'] }),
+      field(f, 'rank', 'Rank', { ph: 'e.g. Plat 2' }),
+      field(f, 'rp', 'Rank points', { type: 'number' }),
+      field(f, 'kills', 'Kills', { type: 'number' }), field(f, 'deaths', 'Deaths', { type: 'number' }),
+      field(f, 'wins', 'Matches won', { type: 'number' }), field(f, 'losses', 'Matches lost', { type: 'number' }),
+      field(f, 'hs', 'Headshot %', { type: 'number' }),
+      field(f, 'feel', 'How it went', { options: ['', 'Great', 'Good', 'Okay', 'Rough', 'Tilted'] }),
+      h('label', { class: 'stack wide' }, h('span', { class: 'lbl block', text: 'Notes' }),
+        h('input', { class: 'in', type: 'text', value: f.notes, placeholder: 'What went well, what to work on', oninput: e => { f.notes = e.target.value; } }))),
+    h('div', { class: 'loadout-foot' }, h('button', { class: 'btn primary', text: 'Add session', onclick: () => {
+      db.sessions.push({ ...f, id: uid() });
+      if (f.rank) db.profile.rank = f.rank;
+      ui.sessionDraft = null; save(); route(); toast('Session logged');
+    } })));
+
+  const kdPts = sessions.filter(s => (+s.kills || +s.deaths)).map(s => ({ y: +((+s.kills || 0) / Math.max(1, +s.deaths || 0)).toFixed(2), label: fmtDate(s.date) }));
+  const rpPts = sessions.filter(s => s.rp !== '' && s.rp != null).map(s => ({ y: +s.rp, label: fmtDate(s.date) }));
+  const rows = [...sessions].reverse();
+  const tbl = rows.length ? h('table', { class: 'session-table' },
+    h('thead', {}, h('tr', {}, ['Date', 'Playlist', 'Rank', 'RP', 'K–D', 'K/D', 'W–L', 'HS %', 'Felt', 'Notes', ''].map(t => h('th', { text: t })))),
+    h('tbody', {}, rows.map(s => h('tr', {},
+      h('td', { text: fmtDate(s.date) }), h('td', { text: s.mode }), h('td', { text: s.rank || '' }), h('td', { class: 'num', text: s.rp ?? '' }),
+      h('td', { class: 'num', text: (s.kills !== '' || s.deaths !== '') ? `${s.kills || 0}–${s.deaths || 0}` : '' }),
+      h('td', { class: 'num', text: (+s.kills || +s.deaths) ? ((+s.kills || 0) / Math.max(1, +s.deaths || 0)).toFixed(2) : '' }),
+      h('td', { class: 'num', text: (s.wins !== '' || s.losses !== '') ? `${s.wins || 0}–${s.losses || 0}` : '' }),
+      h('td', { class: 'num', text: s.hs !== '' && s.hs != null ? s.hs + '%' : '' }),
+      h('td', { text: s.feel || '' }), h('td', { class: 'hint', text: s.notes || '' }),
+      h('td', {}, h('button', { class: 'del', text: '×', title: 'Delete session', onclick: async () => {
+        if (!(await confirmBox('Delete this session?', fmtDate(s.date) + ' · ' + s.mode, 'Delete', true))) return;
+        db.sessions = db.sessions.filter(x => x !== s); save(); route();
+      } })))))) : h('div', { class: 'chart-empty', text: 'No sessions yet. Log your first one above.' });
+
+  const goalIn = h('input', { class: 'in', type: 'text', placeholder: 'Add a goal, e.g. Reach Emerald', style: 'flex:1',
+    onkeydown: e => { if (e.key === 'Enter' && e.target.value.trim()) { db.goals.push({ id: uid(), text: e.target.value.trim(), done: false }); save(); route(); } } });
+  const done = db.goals.filter(g => g.done).length;
+
+  $('#main').replaceChildren(
+    h('header', { class: 'head' }, h('div', { class: 'head-num' }),
+      h('div', {}, h('h1', { class: 'head-title', text: 'Progress' }),
+        h('div', { class: 'head-sub', text: 'Log your sessions and watch how you improve.' })),
+      h('div', { class: 'head-tools' })),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed', style: 'max-width:80rem' },
+      h('div', { class: 'tiles' },
+        h('div', { class: 'tile accent' }, h('div', { class: 'tile-big', text: deaths || kills ? (kills / Math.max(1, deaths)).toFixed(2) : '–' }), h('div', { class: 'tile-small', text: `K/D overall (${kills}–${deaths})` })),
+        h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: wins + losses ? pct(wins, wins + losses) + '%' : '–' }), h('div', { class: 'tile-small', text: `match win rate (${wins}–${losses})` })),
+        h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: avgHs != null ? avgHs.toFixed(0) + '%' : '–' }), h('div', { class: 'tile-small', text: 'average headshot rate' })),
+        h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: String(sessions.length) }), h('div', { class: 'tile-small', text: sessions.length === 1 ? 'session logged' : 'sessions logged' }))),
+      section('Log a session', null, form),
+      h('div', { class: 'grid2' },
+        section('Rank points', null, lineChart(rpPts, { empty: 'Add rank points to two sessions to see your climb.' })),
+        section('K/D per session', null, lineChart(kdPts, { color: 'var(--good)', fmt: v => v.toFixed(2), empty: 'Add kills and deaths to two sessions to see a trend.' }))),
+      section('Sessions', 'Newest first', h('div', { style: 'overflow-x:auto' }, tbl)),
+      section('Goals', db.goals.length ? `${done} of ${db.goals.length} done` : null, h('div', {},
+        db.goals.map(goalRow),
+        h('div', { class: 'loadout-foot' }, goalIn, h('button', { class: 'btn', text: 'Add', onclick: () => { if (goalIn.value.trim()) { db.goals.push({ id: uid(), text: goalIn.value.trim(), done: false }); save(); route(); } } })))))));
+}
+
+/* ---------- settings ---------- */
+
+function renderSettings() {
+  const st = db.settings;
+  const set = (k, v, rerender = true) => { st[k] = v; save(); applySettings(); if (rerender) route(); };
+  const row = (t, d, ctl) => h('div', { class: 'setting' }, h('div', { class: 't', text: t }), d ? h('div', { class: 'd', text: d }) : null, h('div', { class: 'c' }, ctl));
+  const segCtl = (k, opts) => h('div', { class: 'seg' }, opts.map(([v, label]) => h('button', { class: st[k] === v ? 'on' : '', text: label, onclick: () => set(k, v) })));
+  const sizeVal = h('span', { class: 'range-val', text: st.fontSize + ' px' });
+  const sizeRange = h('input', { type: 'range', min: '12', max: '22', step: '1', value: st.fontSize, style: 'width:12rem',
+    oninput: e => { st.fontSize = +e.target.value; sizeVal.textContent = st.fontSize + ' px'; applySettings(); save(); } });
+  const fontSel = k => h('select', { value: st[k], onchange: e => set(k, e.target.value) }, FONTS.map(([v, label]) => h('option', { value: v, text: label })));
+
+  $('#main').replaceChildren(
+    h('header', { class: 'head' }, h('div', { class: 'head-num' }),
+      h('div', {}, h('h1', { class: 'head-title', text: 'Settings' }), h('div', { class: 'head-sub', text: 'Make Stratbook look and feel the way you want.' })),
+      h('div', { class: 'head-tools' })),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed', style: 'max-width:56rem' },
+      section('Text', null, h('div', {},
+        row('Text size', 'Scales the whole app', h('div', { class: 'field-inline' },
+          h('button', { class: 'btn', text: 'A−', 'aria-label': 'Smaller text', onclick: () => set('fontSize', Math.max(12, st.fontSize - 1)) }),
+          sizeRange, sizeVal,
+          h('button', { class: 'btn', text: 'A+', 'aria-label': 'Larger text', onclick: () => set('fontSize', Math.min(22, st.fontSize + 1)) }))),
+        row('Font', 'Used for all text', fontSel('font')),
+        row('Heading font', 'Used for page titles and big numbers', fontSel('headingFont')),
+        h('div', { class: 'font-preview' },
+          h('div', { class: 'a', style: 'font-family:var(--font-display)', text: 'Clubhouse · CCTV fast hit' }),
+          h('div', { class: 'b', text: 'Hibana opens the CCTV wall from Rafters while Thatcher clears the Bandit batteries. 0123456789' })))),
+      section('Appearance', null, h('div', {},
+        row('Theme', null, segCtl('theme', [['dark', 'Dark'], ['midnight', 'Midnight'], ['light', 'Light']])),
+        row('Accent colour', 'Buttons, highlights and charts', h('div', { class: 'swatches' },
+          ACCENTS.map(c => h('button', { class: 'swatch-btn' + (st.accent.toLowerCase() === c ? ' on' : ''), style: '--c:' + c, 'aria-label': 'Accent ' + c, onclick: () => set('accent', c) })),
+          h('input', { type: 'color', value: st.accent, title: 'Any colour', onchange: e => set('accent', e.target.value) }))),
+        row('Spacing', 'How roomy pages are', segCtl('density', [['compact', 'Compact'], ['comfortable', 'Comfortable'], ['spacious', 'Spacious']])))),
+      section('Accessibility', null, h('div', {},
+        row('Animations', 'Turn off to stop movement and transitions', toggleCtl(st.motion, v => set('motion', v))),
+        row('High contrast', 'Brighter text and stronger outlines', toggleCtl(st.contrast, v => set('contrast', v))),
+        row('Reset look', 'Back to the default theme, font and size', h('button', { class: 'btn', text: 'Reset', onclick: () => { db.settings = defaultSettings(); save(); applySettings(); route(); } })))),
+      section('Your data', null, h('div', {},
+        row('Back up everything', 'Strats, boards, profile, progress and all your pictures in one file', h('button', { class: 'btn primary', text: 'Export backup', onclick: exportData })),
+        row('Restore a backup', 'Replaces what is in the app now', h('button', { class: 'btn', text: 'Import backup', onclick: () => $('#importFile').click() })),
+        (() => { const r = row('Data folder', 'Where Stratbook keeps your files', h('span', { class: 'hint', text: '…' })); Store.dataPath().then(p => { r.querySelector('.c span').textContent = p; }).catch(() => {}); return r; })())),
+      section('About', null, h('p', { class: 'hint', style: 'margin:0' }, 'Stratbook 2.0 · made for you · keyboard: ', h('kbd', { text: 'Ctrl K' }), ' search, ', h('kbd', { text: 'N' }), ' new strat on a map')))));
+}
+
+
 /* ================= keys + boot ================= */
 
 document.addEventListener('keydown', e => {
@@ -1611,9 +2197,9 @@ document.addEventListener('keydown', e => {
 $('#finderInput').addEventListener('input', e => runFinder(e.target.value));
 $('#finder').addEventListener('mousedown', e => { if (e.target.id === 'finder') closeFinder(); });
 $('#findBtn').addEventListener('click', openFinder);
-$('#exportBtn').addEventListener('click', exportData);
+if ($('#exportBtn')) $('#exportBtn').addEventListener('click', exportData);
 $('#webBtn').addEventListener('click', async () => { const q = await ask('Search the web', ''); if (q) webSearch(q); });
-$('#importBtn').addEventListener('click', () => $('#importFile').click());
+if ($('#importBtn')) $('#importBtn').addEventListener('click', () => $('#importFile').click());
 $('#importFile').addEventListener('change', e => { if (e.target.files[0]) importData(e.target.files[0]); e.target.value = ''; });
 window.addEventListener('hashchange', route);
 document.addEventListener('contextmenu', e => { if (!typing(e)) e.preventDefault(); });
