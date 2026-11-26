@@ -214,7 +214,8 @@ const UBI_SESSIONS: &str = "https://public-ubiservices.ubi.com/v3/profiles/sessi
 const UBI_FULL_PROFILES: &str = "https://public-ubiservices.ubi.com/v2/spaces/0d2ae42d-4c27-4cb7-af6c-2099062302bb/title/r6s/skill/full_profiles";
 // Ubisoft refuses retired app ids with "The Ubi-AppId header is invalid", so
 // several known ones are tried in order and the accepted one is remembered.
-const UBI_APP_IDS: [&str; 5] = [
+const UBI_APP_IDS: [&str; 6] = [
+    "e3d5ea9e-50bd-43b7-88bf-39794f4e3d40", // Rainbow Six Siege PC client: the only one the ranked stats service accepts
     "314d4fef-e568-454a-ae06-43e3bece12a6", // Ubisoft web (Siege stats pages)
     "f68a4bb5-608a-4ff2-8123-be8ef797e0a6", // Ubisoft Connect for PC
     "685a3038-2b04-47ee-9c5a-6403381a46aa", // ubisoft.com Siege pages
@@ -226,6 +227,8 @@ fn appid_refused(e: &str) -> bool {
     let l = e.to_lowercase();
     l.contains("appid") || l.contains("app id") || l.contains("application")
 }
+/// App id the stats service needs; its session must be made with this same id.
+const UBI_STATS_APP_ID: &str = "e3d5ea9e-50bd-43b7-88bf-39794f4e3d40";
 const UBI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 
 fn ubi_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -312,7 +315,7 @@ async fn ubi_login(app: AppHandle, email: String, password: String) -> Result<se
                 Err(e) => return Err(e),
             }
         }
-        Err(format!("Ubisoft refused every app id Stratbook knows. Tell Claude this message so it can be updated. ({last})"))
+        Err(format!("Sign-in: Ubisoft refused every app id Stratbook knows. Send Claude this message. ({last})"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -381,7 +384,18 @@ fn ubi_get_profiles_with(s: &serde_json::Value, app_id: &str) -> Result<String, 
 #[tauri::command]
 async fn ubi_fetch_stats(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let s = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
+        let mut s = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
+        // The stats service only takes a session made with the Siege client's app id.
+        if s["appId"].as_str() != Some(UBI_STATS_APP_ID) {
+            let remember = s["rememberMeTicket"].as_str().unwrap_or("").to_string();
+            if !remember.is_empty() {
+                if let Ok(reply) = ubi_session_call(&format!("rm_v1 t={remember}"), UBI_STATS_APP_ID, None) {
+                    if ubi_accept(&app, reply, UBI_STATS_APP_ID).is_ok() {
+                        s = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
+                    }
+                }
+            }
+        }
         match ubi_get_profiles(&s) {
             Ok(body) => Ok(body),
             Err((401, _)) | Err((403, _)) => {
@@ -395,9 +409,12 @@ async fn ubi_fetch_stats(app: AppHandle) -> Result<String, String> {
                     .map_err(|e| format!("Your Ubisoft session expired and could not be renewed. Connect again. ({e})"))?;
                 ubi_accept(&app, reply, &app_id)?;
                 let s2 = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
-                ubi_get_profiles(&s2).map_err(|(c, b)| ubi_error(c, &b))
+                ubi_get_profiles(&s2).map_err(|(c, b)| format!("Stats: {}", ubi_error(c, &b)))
             }
-            Err((code, body)) => Err(ubi_error(code, &body)),
+            Err((code, body)) if code == 400 && appid_refused(&body) => Err(format!(
+                "Stats: Ubisoft refused the app id for stats. Disconnect, then connect again so Stratbook can sign in with the Siege app id. If it still fails, send Claude this message. ({})",
+                ubi_error(code, &body))),
+            Err((code, body)) => Err(format!("Stats: {}", ubi_error(code, &body))),
         }
     })
     .await
