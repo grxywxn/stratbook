@@ -50,8 +50,7 @@ window.Icons = (() => {
     const t = code(name);
     const size = t.length > 2 ? 11.5 : 13;
     return `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${mid}"/><stop offset="1" stop-color="${dark}"/></linearGradient></defs>` +
-      `<path d="${outline}" fill="url(#${id})" stroke="${light}" stroke-width="1.7" stroke-linejoin="round"/>` +
-      `<path d="${outline}" fill="none" stroke="${side === 'def' ? '#3d8fd6' : '#e8742a'}" stroke-opacity="0.55" stroke-width="0.8" transform="translate(20 20) scale(0.86) translate(-20 -20)"/>` +
+      `<path d="${outline}" fill="url(#${id})" stroke="${light}" stroke-width="1" stroke-linejoin="round"/>` +
       marks[v] +
       `<text x="20" y="${side === 'def' ? 23.5 : 24.5}" text-anchor="middle" font-family="Bahnschrift, 'DIN Alternate', 'Arial Narrow', sans-serif" font-weight="700" font-size="${size}" letter-spacing=".4" fill="#fffaf0">${esc(t)}</text>`;
   }

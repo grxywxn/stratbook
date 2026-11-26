@@ -354,9 +354,7 @@ textarea.notes { min-height: 90px; }
 
 .op-ico { display: inline-flex; flex: none; }
 .op-ico svg, .op-ico img { display: block; }
-.op-ico img { object-fit: cover; border: 1px solid var(--rule-2); }
-.op-ico.atk img { border-color: var(--atk); }
-.op-ico.def img { border-color: var(--def); }
+.op-ico img { object-fit: contain; border: 0; }
 .op-big { align-self: center; }
 
 .row-ops { grid-column: 1; display: flex; gap: 3px; margin-top: 4px; min-height: 18px; }
@@ -601,3 +599,12 @@ input[type="color"] { width: 42px; height: 28px; padding: 0 2px; background: var
 
 .web-bar { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 10px 12px; background: var(--raise); border: 1px solid var(--rule-2); }
 .web-bar .web-in { flex: 1; font-size: 14px; }
+
+/* bigger operator icons */
+.rail-item.op { grid-template-columns: 38px 1fr auto; padding-top: 3px; padding-bottom: 3px; }
+.lineup { grid-template-columns: 44px 200px 1fr; }
+.row-ops { gap: 4px; min-height: 24px; }
+.bt.icon { padding: 0 2px; }
+.bar-lbl .op-ico { margin-right: 2px; }
+.rail-item.op { align-items: center; }
+.foot-actions { gap: 4px 12px; }

@@ -92,11 +92,10 @@ window.Board = (() => {
       } else if (it.t === 'op') {
         const op = o.findOp ? o.findOp(it.op) : null;
         const [x, y] = P(it);
-        const t = el('g', { transform: `translate(${x - 21} ${y - 21}) scale(1.05)` }, g);
+        const t = el('g', { transform: `translate(${x - 28} ${y - 28}) scale(1.4)` }, g);
         const img = op && op.img && Store.cachedBlob(op.img);
         if (img) {
-          el('rect', { x: 0, y: 0, width: 40, height: 40, fill: '#111110', stroke: op.side === 'def' ? '#3d8fd6' : '#e8742a', 'stroke-width': 2 }, t);
-          el('image', { href: img, x: 2, y: 2, width: 36, height: 36 }, t);
+          el('image', { href: img, x: 0, y: 0, width: 40, height: 40, preserveAspectRatio: 'xMidYMid meet', style: 'filter: drop-shadow(0 1px 2px #000)' }, t);
         } else {
           t.innerHTML = Icons.emblemBody(op ? op.name : '?', op ? op.side : 'atk');
         }
@@ -210,8 +209,8 @@ window.Board = (() => {
       if (o.mode !== 'callouts') {
         const ops = hel('div', 'bt-group');
         ops.append(hel('span', 'bt-lbl', 'Ops'));
-        (o.lineup || []).forEach(op => ops.append(dragBtn(btn(Icons.opIcon(op, 26), op.name + ': drag onto the map, or click then click the map', tool.name === 'op' && tool.op === op.id, () => setTool('op', { op: op.id }), 'icon'),
-          () => Icons.opIcon(op, 42), p => ({ t: 'op', op: op.id, x: p[0], y: p[1] }))));
+        (o.lineup || []).forEach(op => ops.append(dragBtn(btn(Icons.opIcon(op, 32), op.name + ': drag onto the map, or click then click the map', tool.name === 'op' && tool.op === op.id, () => setTool('op', { op: op.id }), 'icon'),
+          () => Icons.opIcon(op, 56), p => ({ t: 'op', op: op.id, x: p[0], y: p[1] }))));
         if (o.allOps && o.allOps.length) {
           const pick = hel('select', 'bt-select');
           pick.title = 'Any other operator';

@@ -314,7 +314,7 @@ function renderOpsRail(activeId) {
     const g = db.guides[o.id];
     const c = g ? g.comfort : 0;
     return h('a', { class: 'rail-item op' + (o.id === activeId ? ' on' : '') + (guideFilled(o.id) ? '' : ' dim'), href: '#/ops/' + o.id },
-      Icons.opIcon(o, 20),
+      Icons.opIcon(o, 28),
       h('span', { class: 'name', text: o.name }),
       c ? h('span', { class: 'pips', title: 'Comfort ' + c + '/5' }, [1, 2, 3, 4, 5].map(k => h('i', { class: 'pip' + (k <= c ? ' on' : '') }))) : h('span', { class: 'count', text: '' }));
   };
@@ -474,7 +474,7 @@ function stratRow(s) {
     h('div', { class: 'row-side' },
       h('span', { class: 'rec', text: r.n ? `${r.w}–${r.l}` : '' }),
       h('span', { class: 'status ' + status[0], text: status[1] })),
-    h('div', { class: 'row-ops' }, ops.length ? ops.map(o => Icons.opIcon(o, 18)) : h('span', { class: 'row-meta', text: s.side === 'atk' ? 'Attack' : 'Defense' })));
+    h('div', { class: 'row-ops' }, ops.length ? ops.map(o => Icons.opIcon(o, 24)) : h('span', { class: 'row-meta', text: s.side === 'atk' ? 'Attack' : 'Defense' })));
 }
 
 function linesPanel(lines, label, placeholder, apply, onDelete, deleteLabel) {
@@ -588,12 +588,12 @@ function stratEditor(s) {
     const opts = [...sideOps];
     const cur = slot.op && opById(slot.op);
     if (cur && cur.side !== s.side) opts.unshift(cur);
-    const icoBox = h('span', { class: 'lineup-ico' }, Icons.opIcon(cur, 30));
+    const icoBox = h('span', { class: 'lineup-ico' }, Icons.opIcon(cur, 40));
     return [
       icoBox,
       h('select', { value: slot.op, onchange: e => {
         slot.op = e.target.value; touch(s); refreshRow();
-        icoBox.replaceChildren(Icons.opIcon(opById(slot.op), 30));
+        icoBox.replaceChildren(Icons.opIcon(opById(slot.op), 40));
       } }, h('option', { value: '', text: 'Operator ' + (i + 1) }), opts.map(o => h('option', { value: o.id, text: o.name }))),
       h('input', { class: 'in', type: 'text', value: slot.role, placeholder: ROLES[s.side][i],
         oninput: e => { slot.role = e.target.value; touch(s); } })
@@ -940,7 +940,7 @@ function renderArsenalRail(a, b) {
 
 function carrierChips(list) {
   if (!list.length) return h('p', { class: 'hint', text: 'No operator has this in their loadout. Add it from an operator\'s Loadout section.' });
-  return h('div', { class: 'op-chips' }, list.map(o => h('a', { class: 'op-chip ' + o.side, href: '#/ops/' + o.id }, Icons.opIcon(o, 26), h('span', { text: o.name }))));
+  return h('div', { class: 'op-chips' }, list.map(o => h('a', { class: 'op-chip ' + o.side, href: '#/ops/' + o.id }, Icons.opIcon(o, 34), h('span', { text: o.name }))));
 }
 
 function renderWeapon(w) {
@@ -1109,7 +1109,7 @@ function loadoutBlock(op, g) {
 /* ================= pictures: drag, drop, paste ================= */
 
 const PIC = {
-  ops: { label: 'operators', max: 128, q: 0.9, prefix: 'op-', list: () => db.operators.slice().sort((a, b) => (a.side === b.side ? byName(a, b) : a.side === 'atk' ? -1 : 1)), art: o => Icons.opIcon(o, 56), sub: o => o.side === 'atk' ? 'Attacker' : 'Defender' },
+  ops: { label: 'operators', max: 128, q: 0.9, prefix: 'op-', list: () => db.operators.slice().sort((a, b) => (a.side === b.side ? byName(a, b) : a.side === 'atk' ? -1 : 1)), art: o => Icons.opIcon(o, 76), sub: o => o.side === 'atk' ? 'Attacker' : 'Defender' },
   weapons: { label: 'weapons', max: 480, q: 0.85, prefix: 'wpn-', list: () => db.weapons.slice().sort((a, b) => ARSENAL.typeOrder.indexOf(a.type) - ARSENAL.typeOrder.indexOf(b.type) || byName(a, b)), art: w => weaponArt(w, 104, 36), sub: w => typeInfo(w.type).label }
 };
 
@@ -1316,7 +1316,7 @@ function renderOp(op) {
   }
   const g = guideFor(op.id);
 
-  const iconBox = h('div', { class: 'op-big', title: 'Drop a picture here to use it for ' + op.name }, Icons.opIcon(op, 72));
+  const iconBox = h('div', { class: 'op-big', title: 'Drop a picture here to use it for ' + op.name }, Icons.opIcon(op, 104));
   acceptImageDrop(iconBox, async imgs => { await setPicture('ops', op, imgs[0].src); route(); toast(op.name + ' picture saved'); });
   const head = h('header', { class: 'head op-hero', style: `--op: hsl(${Icons.hue(op.name, op.side)} 60% 55%)` },
     iconBox,
@@ -1460,7 +1460,7 @@ function renderStats(map) {
   }
   const opRows = [...opCount.entries()].map(([id, e]) => ({ op: opById(id), ...e })).filter(x => x.op)
     .sort((a, b) => b.n - a.n).slice(0, 14)
-    .map(x => ({ label: x.op.name, icon: Icons.opIcon(x.op, 18), value: x.n, text: `${x.n} strat${x.n > 1 ? 's' : ''}` + (x.r ? `  ${pct(x.w, x.r)}%` : ''), href: '#/ops/' + x.op.id }));
+    .map(x => ({ label: x.op.name, icon: Icons.opIcon(x.op, 24), value: x.n, text: `${x.n} strat${x.n > 1 ? 's' : ''}` + (x.r ? `  ${pct(x.w, x.r)}%` : ''), href: '#/ops/' + x.op.id }));
 
   const statusCounts = STATUSES.map(([k, label]) => [label, strats.filter(s => s.status === k).length, k]);
   const statusBar = strats.length
