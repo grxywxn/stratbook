@@ -157,6 +157,7 @@ function normalize(d) {
   if (!Array.isArray(d.sens)) { d.sens = defaultSens(); d.sensCurrent = d.sens[d.sens.length - 1].id; }
   if (!Array.isArray(d.sessions)) d.sessions = [];
   if (!Array.isArray(d.matches)) d.matches = [];
+  d.ubi = Object.assign({ connected: false, name: '', autolog: true, snapshots: [], lastSync: null, lastError: '' }, d.ubi || {});
   if (!Array.isArray(d.goals)) d.goals = defaultGoals();
   for (const g of Object.values(d.guides || {})) {
     g.pick = g.pick || { primary: '', secondary: '', gadget: '' };
@@ -1867,6 +1868,7 @@ function renderHome() {
           h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: String(db.strats.length) }), h('div', { class: 'tile-small', text: db.strats.length === 1 ? 'strat written' : 'strats written' })),
           h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: rounds.length ? pct(wins, rounds.length) + '%' : '–' }), h('div', { class: 'tile-small', text: rounds.length ? `strat win rate (${wins}–${rounds.length - wins})` : 'strat win rate' })),
           (() => { const td = mstats(db.matches.filter(m => dayOf(m) === today())); return h('a', { class: 'tile', href: '#/tracker' }, h('div', { class: 'tile-big', text: td.n ? `${td.w}–${td.l}` : '–' }), h('div', { class: 'tile-small', text: td.n ? `today · ${fmtKD(td.kd)} K/D` : 'no matches today' })); })()),
+        ubiState().connected ? h('div', { style: 'margin-top:var(--gap)' }, ubiCard()) : null,
         h('div', { class: 'grid2' },
           section('Pick up where you left off', null, recentList),
           section('Goals', null, goals)),
@@ -1952,6 +1954,7 @@ function renderProfile() {
           field(p, 'hours', 'Hours played', { ph: 'e.g. 900' })),
         h('div', { style: 'margin-top:.8rem' }, h('span', { class: 'lbl block', text: 'About me' }),
           h('textarea', { class: 'notes', value: p.bio, placeholder: 'Playstyle, what you are working on, anything', oninput: e => { p.bio = e.target.value; save(); } })))),
+      section('Connected accounts', null, ubiCard()),
       section('Attack mains', 'Click to pick', mainsGrid('atk', 'mainsAtk')),
       section('Defense mains', 'Click to pick', mainsGrid('def', 'mainsDef')),
       section('Gear', 'Click, drop or paste a picture on each box', gear),
@@ -2173,7 +2176,7 @@ function renderSettings() {
         row('Back up everything', 'Strats, boards, profile, progress and all your pictures in one file', h('button', { class: 'btn primary', text: 'Export backup', onclick: exportData })),
         row('Restore a backup', 'Replaces what is in the app now', h('button', { class: 'btn', text: 'Import backup', onclick: () => $('#importFile').click() })),
         (() => { const r = row('Data folder', 'Where Stratbook keeps your files', h('span', { class: 'hint', text: '…' })); Store.dataPath().then(p => { r.querySelector('.c span').textContent = p; }).catch(() => {}); return r; })())),
-      section('About', null, h('p', { class: 'hint', style: 'margin:0' }, 'Stratbook 2.1 · made for you · keyboard: ', h('kbd', { text: 'Ctrl K' }), ' search, ', h('kbd', { text: 'N' }), ' new strat on a map')))));
+      section('About', null, h('p', { class: 'hint', style: 'margin:0' }, 'Stratbook 2.2 · made for you · keyboard: ', h('kbd', { text: 'Ctrl K' }), ' search, ', h('kbd', { text: 'N' }), ' new strat on a map')))));
 }
 
 
@@ -2191,15 +2194,16 @@ function blankMatch() {
 
 // Totals for a list of matches.
 function mstats(list) {
-  const t = { n: list.length, w: 0, l: 0, d: 0, k: 0, de: 0, a: 0, hs: 0, rw: 0, rl: 0, rp: 0, mvp: 0 };
+  const t = { n: list.length, w: 0, l: 0, d: 0, k: 0, de: 0, a: 0, hs: 0, hsK: 0, rw: 0, rl: 0, rp: 0, mvp: 0 };
   for (const m of list) {
     if (m.result === 'W') t.w++; else if (m.result === 'L') t.l++; else if (m.result === 'D') t.d++;
-    t.k += +m.kills || 0; t.de += +m.deaths || 0; t.a += +m.assists || 0; t.hs += +m.hs || 0;
+    t.k += +m.kills || 0; t.de += +m.deaths || 0; t.a += +m.assists || 0;
+    if (m.hs !== '' && m.hs != null) { t.hs += +m.hs || 0; t.hsK += +m.kills || 0; }
     t.rw += +m.rw || 0; t.rl += +m.rl || 0; t.rp += +m.rp || 0; if (m.mvp) t.mvp++;
   }
   t.kd = t.de ? t.k / t.de : t.k;
   t.win = t.w + t.l ? t.w / (t.w + t.l) * 100 : null;
-  t.hsp = t.k ? t.hs / t.k * 100 : null;
+  t.hsp = t.hsK ? t.hs / t.hsK * 100 : null;
   t.kpr = t.rw + t.rl ? t.k / (t.rw + t.rl) : null;
   t.avgK = t.n ? t.k / t.n : 0;
   return t;
@@ -2234,8 +2238,8 @@ function matchRow(m) {
     h('span', { class: 'match-res', text: m.result === 'W' ? 'Win' : m.result === 'L' ? 'Loss' : m.result === 'D' ? 'Draw' : '–' }),
     h('span', { class: 'thumb', style: map ? `background-image:${bannerUrl(map)}` : '' }),
     h('span', { class: 'match-main' },
-      h('span', { class: 't', text: (map ? map.name : 'Unknown map') + (m.rw !== '' || m.rl !== '' ? `  ${m.rw || 0}–${m.rl || 0}` : '') }),
-      h('span', { class: 's', text: `${m.playlist} · ${fmtDate(dayOf(m))}${m.date && m.date.length > 10 ? ' ' + m.date.slice(11, 16) : ''}${m.mvp ? ' · MVP' : ''}` })),
+      h('span', { class: 't', text: (map ? map.name : 'Map not set') + (m.rw !== '' || m.rl !== '' ? `  ${m.rw || 0}–${m.rl || 0}` : '') }),
+      h('span', { class: 's', text: `${m.playlist} · ${fmtDate(dayOf(m))}${m.date && m.date.length > 10 ? ' ' + m.date.slice(11, 16) : ''}${m.mvp ? ' · MVP' : ''}${m.synced ? ' · synced from Ubisoft' : ''}` })),
     h('span', { class: 'match-ops' }, ops.slice(0, 4).map(o => Icons.opIcon(o, 26))),
     h('span', { class: 'match-kda' }, h('b', { text: `${m.kills || 0} / ${m.deaths || 0} / ${m.assists || 0}` }), h('span', { class: 's ' + kdTone(kd), text: fmtKD(kd) + ' K/D' })),
     h('span', { class: 'match-rp ' + ((+m.rp || 0) > 0 ? 'up' : (+m.rp || 0) < 0 ? 'down' : ''), text: m.rp !== '' && m.rp != null ? fmtRP(+m.rp) + ' RP' : '' }));
@@ -2250,6 +2254,7 @@ function renderTracker(tab, id) {
   if (tab === 'log') { renderLogMatch(id); return; }
   const all = [...db.matches].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
   const body = h('div', { class: 'ed', style: 'max-width:84rem' });
+  if (!tab) body.append(ubiCard());
   if (!all.length && tab !== 'log') {
     body.append(h('div', { class: 'empty', style: 'padding-left:0' },
       h('h3', { text: 'No matches yet' }),
@@ -2444,6 +2449,228 @@ function renderLogMatch(id) {
 }
 
 
+/* ================= Ubisoft connection ================= */
+
+const UBI_BOARDS = { ranked: 'Ranked', standard: 'Unranked', casual: 'Quick Match', event: 'Arcade', warmup: 'Warm up' };
+const RANK_TIERS = ['Copper', 'Bronze', 'Silver', 'Gold', 'Platinum', 'Emerald', 'Diamond'];
+function rankName(n) {
+  n = +n || 0;
+  if (n <= 0) return 'Unranked';
+  if (n >= 36) return 'Champion';
+  const tier = RANK_TIERS[Math.floor((n - 1) / 5)];
+  const div = 5 - ((n - 1) % 5);
+  return tier ? `${tier} ${div}` : 'Rank ' + n;
+}
+
+const ubiApi = {
+  call(cmd, args) {
+    const T = window.__TAURI__;
+    if (!T || !T.core) return Promise.reject(new Error('Connecting Ubisoft only works in the installed app.'));
+    return T.core.invoke(cmd, args || {});
+  },
+  login: (email, password) => ubiApi.call('ubi_login', { email, password }),
+  login2fa: (ticket, code, appId) => ubiApi.call('ubi_login_2fa', { ticket, code, appId }),
+  status: () => ubiApi.call('ubi_status'),
+  logout: () => ubiApi.call('ubi_logout'),
+  stats: () => ubiApi.call('ubi_fetch_stats')
+};
+
+function ubiState() {
+  return (db.ubi = db.ubi || { connected: false, name: '', autolog: true, snapshots: [], lastSync: null, lastError: '' });
+}
+
+// Turn Ubisoft's full_profiles reply into { board: { kills, deaths, wins, losses, abandons, rp, rank, maxRank, season } }.
+function parseUbi(text) {
+  const j = JSON.parse(text);
+  const out = {};
+  const fams = j.platform_families_full_profiles || [];
+  for (const fam of fams) for (const b of fam.board_ids_full_profiles || []) {
+    const fp = (b.full_profiles || [])[0];
+    if (!fp) continue;
+    const pr = fp.profile || {}, ss = fp.season_statistics || {}, mo = ss.match_outcomes || {};
+    out[b.board_id] = {
+      kills: +ss.kills || 0, deaths: +ss.deaths || 0,
+      wins: +mo.wins || 0, losses: +mo.losses || 0, abandons: +mo.abandons || 0,
+      rp: +pr.rank_points || 0, rank: +pr.rank || 0, maxRank: +pr.max_rank || 0, season: pr.season_id ?? null
+    };
+  }
+  if (!Object.keys(out).length) throw new Error('Ubisoft replied, but without any stats. Reply started: ' + text.slice(0, 160));
+  return out;
+}
+
+const boardDelta = (a, b) => ({
+  kills: b.kills - a.kills, deaths: b.deaths - a.deaths, wins: b.wins - a.wins, losses: b.losses - a.losses,
+  abandons: b.abandons - a.abandons, rp: b.rp - a.rp
+});
+
+let ubiSyncing = false;
+async function syncUbi(manual) {
+  const u = ubiState();
+  if (!u.connected || ubiSyncing) return;
+  ubiSyncing = true;
+  try {
+    const boards = parseUbi(await ubiApi.stats());
+    const prev = u.snapshots[u.snapshots.length - 1];
+    const snap = { t: Date.now(), boards };
+    u.lastSync = snap.t; u.lastError = '';
+    let logged = 0, sessions = 0;
+    if (prev) {
+      for (const [id, now] of Object.entries(boards)) {
+        const was = prev.boards[id];
+        if (!was || was.season !== now.season) continue;
+        const d = boardDelta(was, now);
+        const games = d.wins + d.losses + d.abandons;
+        if (games <= 0) continue;
+        if (!u.autolog) continue;
+        const playlist = UBI_BOARDS[id] || id;
+        if (games === 1) {
+          db.matches.push({
+            id: uid(), date: nowLocal(), playlist, map: '', result: d.wins ? 'W' : 'L', rw: '', rl: '',
+            kills: d.kills, deaths: d.deaths, assists: '', hs: '', ops: [],
+            rp: id === 'ranked' ? d.rp : '', rank: id === 'ranked' ? rankName(now.rank) : '', mvp: false,
+            notes: d.abandons ? 'Abandoned. Synced from Ubisoft.' : 'Synced from Ubisoft. Add the map and operators.', synced: true
+          });
+          logged++;
+        } else {
+          db.sessions.push({ id: uid(), date: today(), mode: playlist, rank: id === 'ranked' ? rankName(now.rank) : '', rp: id === 'ranked' ? now.rp : '',
+            kills: d.kills, deaths: d.deaths, wins: d.wins, losses: d.losses, hs: '', feel: '', notes: `${games} matches synced from Ubisoft` });
+          sessions++;
+        }
+      }
+    }
+    if (boards.ranked) db.profile.rank = rankName(boards.ranked.rank);
+    u.snapshots.push(snap);
+    if (u.snapshots.length > 400) u.snapshots.splice(0, u.snapshots.length - 400);
+    save();
+    if (logged || sessions) toast(logged ? `Synced: ${logged} new match${logged > 1 ? 'es' : ''} logged from Ubisoft` : `Synced: ${sessions} batch${sessions > 1 ? 'es' : ''} added to your daily log`);
+    else if (manual) toast('Synced with Ubisoft. Nothing new since last time.');
+    const hsh = location.hash, act = document.activeElement;
+    const busy = act && /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName);
+    if (!busy && ['', '#/', '#/home', '#/tracker', '#/tracker/matches', '#/tracker/ops', '#/tracker/maps', '#/tracker/daily'].includes(hsh)) route();
+  } catch (e) {
+    u.lastError = e.message || String(e);
+    save();
+    if (manual) toast(u.lastError);
+    if (/session expired/i.test(u.lastError)) { u.connected = false; save(); }
+  } finally {
+    ubiSyncing = false;
+  }
+}
+
+// Ubisoft numbers for today: latest snapshot minus the last one taken before today.
+function ubiToday() {
+  const u = ubiState();
+  const snaps = u.snapshots;
+  if (!snaps.length) return null;
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const latest = snaps[snaps.length - 1];
+  const base = [...snaps].reverse().find(s => s.t < midnight.getTime()) || snaps[0];
+  const out = {};
+  for (const [id, now] of Object.entries(latest.boards)) {
+    const was = base.boards[id];
+    out[id] = was && was.season === now.season ? boardDelta(was, now) : null;
+  }
+  return { latest: latest.boards, today: out };
+}
+
+function connectUbiDialog() {
+  const overlay = h('div', { class: 'modal' });
+  const email = h('input', { class: 'in', type: 'email', placeholder: 'Ubisoft account email', autocomplete: 'username' });
+  const pass = h('input', { class: 'in', type: 'password', placeholder: 'Password', autocomplete: 'current-password' });
+  const code = h('input', { class: 'in', type: 'text', placeholder: '6-digit code', inputmode: 'numeric', autocomplete: 'one-time-code' });
+  const err = h('div', { class: 'ubi-err' });
+  const step2 = h('div', { hidden: true }, h('p', { class: 'hint', text: 'Your account has two-step verification. Enter the code from your authenticator app, email or text.' }), code);
+  const step1 = h('div', {}, email, pass);
+  const ok = h('button', { class: 'btn primary', type: 'submit', text: 'Connect' });
+  let tfa = null;
+  const close = () => overlay.remove();
+  const form = h('form', { class: 'modal-box ubi-box', onsubmit: async e => {
+    e.preventDefault();
+    err.textContent = ''; ok.disabled = true; ok.textContent = 'Connecting…';
+    try {
+      const r = tfa ? await ubiApi.login2fa(tfa.twoFactorTicket, code.value, tfa.appId) : await ubiApi.login(email.value.trim(), pass.value);
+      if (r.status === '2fa') {
+        tfa = r; step1.hidden = true; step2.hidden = false; ok.textContent = 'Verify'; ok.disabled = false; code.focus();
+        return;
+      }
+      const u = ubiState();
+      u.connected = true; u.name = r.name || ''; u.lastError = '';
+      if (u.name && !db.profile.tag) db.profile.tag = u.name;
+      pass.value = '';
+      save(); close();
+      toast('Connected to Ubisoft as ' + (u.name || 'your account'));
+      await syncUbi(true);
+      route();
+    } catch (e2) {
+      err.textContent = e2.message || String(e2);
+      ok.disabled = false; ok.textContent = tfa ? 'Verify' : 'Connect';
+    }
+  } },
+    h('div', { class: 'modal-title', text: 'Connect your Ubisoft account' }),
+    h('p', { class: 'modal-body' }, 'Stratbook signs in to Ubisoft the way Ubisoft\'s own stats site does, then reads your season stats. ',
+      h('b', { text: 'Your password is sent only to Ubisoft and is never saved.' }),
+      ' Only Ubisoft\'s sign-in token is kept on this PC so you stay connected.'),
+    step1, step2, err,
+    h('p', { class: 'hint', style: 'margin:.2rem 0 1rem' }, 'This is not an official Ubisoft feature, so it can stop working if Ubisoft changes things. Disconnect any time.'),
+    h('div', { class: 'modal-btns' }, h('button', { class: 'btn', type: 'button', text: 'Cancel', onclick: close }), ok));
+  overlay.append(form);
+  overlay.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  document.body.append(overlay);
+  setTimeout(() => email.focus(), 30);
+}
+
+async function disconnectUbi() {
+  if (!(await confirmBox('Disconnect Ubisoft?', 'Stratbook stops syncing and deletes its saved Ubisoft sign-in. Matches already logged stay.', 'Disconnect', true))) return;
+  try { await ubiApi.logout(); } catch (e) {}
+  const u = ubiState(); u.connected = false; save(); route();
+}
+
+function ubiCard() {
+  const u = ubiState();
+  if (!u.connected) {
+    return h('div', { class: 'ubi-card' },
+      h('div', { class: 'ubi-logo', text: 'U' }),
+      h('div', { class: 'ubi-text' }, h('b', { text: 'Connect your Ubisoft account' }),
+        h('span', { class: 'hint', text: 'Sync your rank and season stats, and log matches automatically after each game.' }),
+        u.lastError ? h('span', { class: 'ubi-err', text: u.lastError }) : null),
+      h('button', { class: 'btn primary', text: 'Connect Ubisoft', onclick: connectUbiDialog }));
+  }
+  const t = ubiToday();
+  const r = t && t.latest.ranked;
+  const rt = t && t.today.ranked;
+  const kd = r ? (r.deaths ? r.kills / r.deaths : r.kills) : 0;
+  const ago = u.lastSync ? Math.max(0, Math.round((Date.now() - u.lastSync) / 60000)) : null;
+  return h('div', { class: 'ubi-card on' },
+    h('div', { class: 'ubi-logo', text: 'U' }),
+    h('div', { class: 'ubi-text' },
+      h('b', { text: 'Ubisoft · ' + (u.name || 'connected') }),
+      h('span', { class: 'hint', text: u.lastSync ? `Last synced ${ago === 0 ? 'just now' : ago + ' min ago'} · checks every 4 minutes while Stratbook is open` : 'Not synced yet' }),
+      u.lastError ? h('span', { class: 'ubi-err', text: u.lastError }) : null),
+    r ? h('div', { class: 'ubi-stats' },
+      h('div', {}, h('b', { text: rankName(r.rank) }), h('span', { text: `${r.rp} RP` })),
+      h('div', {}, h('b', { text: `${r.wins}–${r.losses}` }), h('span', { text: 'ranked this season' })),
+      h('div', {}, h('b', { text: fmtKD(kd) }), h('span', { text: 'season K/D' })),
+      rt ? h('div', {}, h('b', { class: rt.rp > 0 ? 'good' : rt.rp < 0 ? 'bad' : '', text: (rt.rp > 0 ? '+' : '') + rt.rp + ' RP' }),
+        h('span', { text: `today · ${rt.wins}–${rt.losses}, ${rt.kills}/${rt.deaths}` })) : null) : null,
+    h('div', { class: 'ubi-acts' },
+      h('button', { class: 'btn', text: 'Sync now', onclick: () => syncUbi(true) }),
+      h('label', { class: 'check', title: 'Add a match to your tracker whenever a sync shows you played one' },
+        h('input', { type: 'checkbox', checked: u.autolog || null, onchange: e => { u.autolog = e.target.checked; save(); } }), 'Auto-log matches'),
+      h('button', { class: 'link', text: 'Disconnect', onclick: disconnectUbi })));
+}
+
+// Check the saved connection on start, then keep syncing while the app is open.
+async function startUbi() {
+  const u = ubiState();
+  try {
+    const st = await ubiApi.status();
+    u.connected = !!st.connected;
+    if (st.name) u.name = st.name;
+  } catch (e) { u.connected = false; }
+  if (u.connected) { setTimeout(() => syncUbi(false), 2500); setInterval(() => syncUbi(false), 4 * 60 * 1000); }
+}
+
+
 /* ================= keys + boot ================= */
 
 document.addEventListener('keydown', e => {
@@ -2472,5 +2699,5 @@ $('#importFile').addEventListener('change', e => { if (e.target.files[0]) import
 window.addEventListener('hashchange', route);
 document.addEventListener('contextmenu', e => { if (!typing(e)) e.preventDefault(); });
 
-load().then(route);
+load().then(() => { route(); startUbi(); });
 })();

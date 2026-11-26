@@ -799,3 +799,22 @@ a.tile:hover { border-color: var(--border-2); }
 .ms-vals b.good { color: var(--good); }
 .ms-vals b.bad { color: var(--bad); }
 @media (max-width: 1200px) { .match { grid-template-columns: 3.4rem 4.5rem 1fr 7rem 4.5rem; } .match-ops { display: none; } .today-grid { grid-template-columns: repeat(2, 1fr); } .log-top { grid-template-columns: 1fr 1fr; } }
+
+/* ================= Ubisoft connection ================= */
+.ubi-card { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; padding: 1rem 1.2rem; border-radius: 16px;
+  background: linear-gradient(120deg, color-mix(in srgb, #2b6cf0 18%, var(--surface)), var(--surface) 65%);
+  border: 1px solid var(--border); box-shadow: var(--shadow-sm); margin-top: .4rem; animation: card-in calc(.35s * var(--speed)) ease both; }
+.sec .ubi-card { margin-top: 0; box-shadow: none; }
+.ubi-logo { width: 2.8rem; height: 2.8rem; border-radius: 50%; display: grid; place-items: center; flex: none;
+  background: conic-gradient(from 200deg, #2b6cf0, #7a5cff, #2b6cf0); color: #fff; font: 800 1.3rem/1 var(--font-display); }
+.ubi-text { display: flex; flex-direction: column; gap: .1rem; min-width: 14rem; flex: 1; }
+.ubi-err { color: var(--bad); font-size: .85rem; }
+.ubi-stats { display: flex; gap: 1.6rem; flex-wrap: wrap; }
+.ubi-stats > div { display: flex; flex-direction: column; }
+.ubi-stats b { font: 700 1.2rem/1.2 var(--font-display); }
+.ubi-stats span { font-size: .78rem; color: var(--text-3); }
+.ubi-acts { display: flex; align-items: center; gap: 1rem; margin-left: auto; flex-wrap: wrap; }
+.ubi-box .in { width: 100%; margin-bottom: .6rem; }
+.ubi-box input[type="email"], .ubi-box input[type="password"] { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .5rem .7rem; min-height: 2.3rem; outline: none; }
+.ubi-box input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.ubi-box .ubi-err { display: block; margin-bottom: .4rem; }

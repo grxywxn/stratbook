@@ -204,6 +204,180 @@ fn open_in_default_browser(url: &str) -> Result<(), String> {
     }
 }
 
+/* ---------------- Ubisoft account (unofficial stats service) ----------------
+ * Signs in to Ubisoft the same way Ubisoft's own stats website does. The
+ * password is sent only to Ubisoft and never stored; only the session and
+ * Ubisoft's remember-me ticket are kept in ubisoft.json in the data folder.
+ */
+
+const UBI_SESSIONS: &str = "https://public-ubiservices.ubi.com/v3/profiles/sessions";
+const UBI_FULL_PROFILES: &str = "https://public-ubiservices.ubi.com/v2/spaces/0d2ae42d-4c27-4cb7-af6c-2099062302bb/title/r6s/skill/full_profiles";
+const UBI_APP_IDS: [&str; 2] = ["3587dcbb-7f81-457c-9781-0e3f29f6f56a", "39baebad-39e5-4552-8c25-2c9b919064e2"];
+const UBI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
+fn ubi_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("ubisoft.json"))
+}
+
+fn ubi_read(app: &AppHandle) -> Option<serde_json::Value> {
+    fs::read_to_string(ubi_file(app).ok()?).ok().and_then(|s| serde_json::from_str(&s).ok())
+}
+
+fn ubi_write(app: &AppHandle, v: &serde_json::Value) -> Result<(), String> {
+    write_atomic(&ubi_file(app)?, v.to_string().as_bytes())
+}
+
+fn ubi_error(code: u16, body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+    let msg = v.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let err = v.get("errorCode").and_then(|m| m.as_i64()).unwrap_or(0);
+    match (code, err) {
+        (401, _) | (_, 1) | (_, 3) | (_, 1003) => format!("Ubisoft rejected the sign-in: wrong email, password or code. ({code} {err} {msg})"),
+        (429, _) | (_, 1100) => "Ubisoft says there were too many attempts. Wait a few minutes and try again.".into(),
+        _ => format!("Ubisoft returned an error ({code}{}): {}", if err != 0 { format!(", code {err}") } else { String::new() }, if msg.is_empty() { body.chars().take(200).collect() } else { msg }),
+    }
+}
+
+/// POST to the sessions endpoint with the given Authorization header.
+fn ubi_session_call(auth: &str, app_id: &str, two_fa_code: Option<&str>) -> Result<serde_json::Value, String> {
+    let mut req = ureq::post(UBI_SESSIONS)
+        .timeout(Duration::from_secs(20))
+        .set("Authorization", auth)
+        .set("Ubi-AppId", app_id)
+        .set("Content-Type", "application/json; charset=UTF-8")
+        .set("User-Agent", UBI_UA);
+    if let Some(code) = two_fa_code {
+        req = req.set("Ubi-2faCode", code);
+    }
+    match req.send_string(r#"{"rememberMe":true}"#) {
+        Ok(r) => {
+            let body = r.into_string().map_err(|e| e.to_string())?;
+            serde_json::from_str(&body).map_err(|e| format!("unexpected reply from Ubisoft: {e}"))
+        }
+        Err(ureq::Error::Status(code, r)) => Err(ubi_error(code, &r.into_string().unwrap_or_default())),
+        Err(e) => Err(format!("could not reach Ubisoft: {e}")),
+    }
+}
+
+/// Keep what we need from a sessions reply. Returns ("ok"|"2fa", value for JS).
+fn ubi_accept(app: &AppHandle, reply: serde_json::Value, app_id: &str) -> Result<serde_json::Value, String> {
+    if let Some(t) = reply.get("twoFactorAuthenticationTicket").and_then(|t| t.as_str()) {
+        if reply.get("ticket").map(|v| v.is_null()).unwrap_or(true) {
+            return Ok(serde_json::json!({ "status": "2fa", "twoFactorTicket": t, "appId": app_id }));
+        }
+    }
+    let ticket = reply.get("ticket").and_then(|t| t.as_str()).ok_or("Ubisoft did not return a session")?;
+    let prev = ubi_read(app).unwrap_or(serde_json::json!({}));
+    let remember = reply.get("rememberMeTicket").and_then(|t| t.as_str())
+        .or_else(|| prev.get("rememberMeTicket").and_then(|t| t.as_str()))
+        .unwrap_or("");
+    let session = serde_json::json!({
+        "ticket": ticket,
+        "sessionId": reply.get("sessionId").and_then(|t| t.as_str()).unwrap_or(""),
+        "profileId": reply.get("profileId").and_then(|t| t.as_str()).unwrap_or(""),
+        "userId": reply.get("userId").and_then(|t| t.as_str()).unwrap_or(""),
+        "nameOnPlatform": reply.get("nameOnPlatform").and_then(|t| t.as_str()).unwrap_or(""),
+        "expiration": reply.get("expiration").and_then(|t| t.as_str()).unwrap_or(""),
+        "rememberMeTicket": remember,
+        "appId": app_id
+    });
+    ubi_write(app, &session)?;
+    Ok(serde_json::json!({ "status": "ok", "name": session["nameOnPlatform"], "profileId": session["profileId"] }))
+}
+
+#[tauri::command]
+async fn ubi_login(app: AppHandle, email: String, password: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let basic = format!("Basic {}", encode_base64(format!("{email}:{password}").as_bytes()));
+        let mut last = String::new();
+        for id in UBI_APP_IDS {
+            match ubi_session_call(&basic, id, None) {
+                Ok(reply) => return ubi_accept(&app, reply, id),
+                Err(e) => {
+                    // Wrong credentials won't get better with another app id.
+                    if e.contains("wrong email") || e.contains("too many") { return Err(e); }
+                    last = e;
+                }
+            }
+        }
+        Err(last)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn ubi_login_2fa(app: AppHandle, ticket: String, code: String, app_id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let reply = ubi_session_call(&format!("ubi_2fa_v1 t={ticket}"), &app_id, Some(code.trim()))?;
+        ubi_accept(&app, reply, &app_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn ubi_status(app: AppHandle) -> serde_json::Value {
+    match ubi_read(&app) {
+        Some(s) if s.get("ticket").and_then(|t| t.as_str()).map(|t| !t.is_empty()).unwrap_or(false) =>
+            serde_json::json!({ "connected": true, "name": s["nameOnPlatform"], "profileId": s["profileId"] }),
+        _ => serde_json::json!({ "connected": false }),
+    }
+}
+
+#[tauri::command]
+fn ubi_logout(app: AppHandle) -> Result<(), String> {
+    match fs::remove_file(ubi_file(&app)?) {
+        Err(e) if e.kind() != ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+fn ubi_get_profiles(s: &serde_json::Value) -> Result<String, (u16, String)> {
+    let pid = s["profileId"].as_str().unwrap_or("");
+    let url = format!("{UBI_FULL_PROFILES}?profile_ids={pid}&platform_families=pc");
+    let req = ureq::get(&url)
+        .timeout(Duration::from_secs(20))
+        .set("Authorization", &format!("Ubi_v1 t={}", s["ticket"].as_str().unwrap_or("")))
+        .set("Ubi-AppId", s["appId"].as_str().unwrap_or(UBI_APP_IDS[0]))
+        .set("Ubi-SessionId", s["sessionId"].as_str().unwrap_or(""))
+        .set("expiration", s["expiration"].as_str().unwrap_or(""))
+        .set("Ubi-LocaleCode", "en-US")
+        .set("User-Agent", UBI_UA);
+    match req.call() {
+        Ok(r) => r.into_string().map_err(|e| (0, e.to_string())),
+        Err(ureq::Error::Status(code, r)) => Err((code, r.into_string().unwrap_or_default())),
+        Err(e) => Err((0, format!("could not reach Ubisoft: {e}"))),
+    }
+}
+
+/// Current-season stats for every playlist, as Ubisoft returns them.
+#[tauri::command]
+async fn ubi_fetch_stats(app: AppHandle) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
+        match ubi_get_profiles(&s) {
+            Ok(body) => Ok(body),
+            Err((401, _)) | Err((403, _)) => {
+                // Session expired: renew it with the remember-me ticket, then retry once.
+                let remember = s["rememberMeTicket"].as_str().unwrap_or("");
+                if remember.is_empty() {
+                    return Err("Your Ubisoft session expired. Connect again.".into());
+                }
+                let app_id = s["appId"].as_str().unwrap_or(UBI_APP_IDS[0]).to_string();
+                let reply = ubi_session_call(&format!("rm_v1 t={remember}"), &app_id, None)
+                    .map_err(|e| format!("Your Ubisoft session expired and could not be renewed. Connect again. ({e})"))?;
+                ubi_accept(&app, reply, &app_id)?;
+                let s2 = ubi_read(&app).ok_or("Not connected to Ubisoft")?;
+                ubi_get_profiles(&s2).map_err(|(c, b)| ubi_error(c, &b))
+            }
+            Err((code, body)) => Err(ubi_error(code, &body)),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Download an image from a web address (used when a link, not a file, is
 /// dragged onto the app). Returns it as a data URL.
 #[tauri::command]
@@ -292,7 +466,12 @@ pub fn run() {
             export_text,
             export_data_url,
             fetch_image,
-            open_web
+            open_web,
+            ubi_login,
+            ubi_login_2fa,
+            ubi_status,
+            ubi_logout,
+            ubi_fetch_stats
         ])
         .run(tauri::generate_context!())
         .expect("error while running Stratbook");
