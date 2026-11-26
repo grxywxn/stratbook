@@ -127,6 +127,7 @@ function freshDB() {
     profile: defaultProfile(),
     sens, sensCurrent: sens[sens.length - 1].id,
     sessions: [],
+    matches: [],
     goals: defaultGoals(),
     weapons: seedWeapons(),
     gadgets: seedGadgets(),
@@ -155,6 +156,7 @@ function normalize(d) {
   d.profile = mergeDeep(defaultProfile(), d.profile || {});
   if (!Array.isArray(d.sens)) { d.sens = defaultSens(); d.sensCurrent = d.sens[d.sens.length - 1].id; }
   if (!Array.isArray(d.sessions)) d.sessions = [];
+  if (!Array.isArray(d.matches)) d.matches = [];
   if (!Array.isArray(d.goals)) d.goals = defaultGoals();
   for (const g of Object.values(d.guides || {})) {
     g.pick = g.pick || { primary: '', secondary: '', gadget: '' };
@@ -271,19 +273,19 @@ function route() {
   if (board) { board.destroy(); board = null; }
   const [view0, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
   const view = view0 || 'home';
-  const solo = ['home', 'progress', 'sens', 'profile', 'settings'];
+  const solo = ['home', 'progress', 'tracker', 'sens', 'profile', 'settings'];
   const tab = view === 'pictures' ? (a === 'weapons' ? 'arsenal' : a === 'maps' ? 'maps' : 'ops')
     : solo.includes(view) || ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
   const main = document.querySelector('.main');
   main.style.removeProperty('--map');
-  document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+  document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === (tab === 'progress' ? 'tracker' : tab)));
   $('#app').classList.toggle('no-rail', solo.includes(view));
   // Play the page-enter animation when the page (not just a detail) changes.
   const pageKey = view + '/' + (a || '');
   if (pageKey !== lastView) { main.classList.remove('enter'); void main.offsetWidth; main.classList.add('enter'); lastView = pageKey; }
   else main.classList.remove('enter');
   if (view === 'home') renderHome();
-  else if (view === 'progress') renderProgress();
+  else if (view === 'progress' || view === 'tracker') renderTracker(view === 'progress' ? 'daily' : (a || ''), b);
   else if (view === 'sens') renderSens();
   else if (view === 'profile') renderProfile();
   else if (view === 'settings') renderSettings();
@@ -1837,7 +1839,9 @@ function renderHome() {
   const goals = h('div', {}, db.goals.slice(0, 6).map(goalRow), db.goals.length ? null : h('p', { class: 'hint', text: 'No goals yet. Add some on the Progress page.' }));
 
   const sessionsSorted = [...db.sessions].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-  const rpPoints = sessionsSorted.filter(s => s.rp !== '' && s.rp != null).map(s => ({ y: +s.rp, label: fmtDate(s.date) }));
+  let runRp = 0;
+  const rankedRp = [...db.matches].sort((a, b) => (a.date || '').localeCompare(b.date || '')).filter(m => m.playlist === 'Ranked' && m.rp !== '' && m.rp != null).map(m => { runRp += +m.rp; return { y: runRp, label: fmtDate(dayOf(m)) }; });
+  const rpPoints = rankedRp.length >= 2 ? rankedRp : sessionsSorted.filter(s => s.rp !== '' && s.rp != null).map(s => ({ y: +s.rp, label: fmtDate(s.date) }));
   const mains = [...p.mainsAtk, ...p.mainsDef].map(opById).filter(Boolean);
 
   $('#main').replaceChildren(
@@ -1854,7 +1858,7 @@ function renderHome() {
               p.platform ? h('span', { class: 'pill', text: p.platform }) : null,
               p.aim ? h('span', { class: 'pill', text: p.aim + ' aimer' }) : null)),
           h('div', { class: 'hero-tools' },
-            h('a', { class: 'btn primary', href: '#/progress', text: 'Log a session' }),
+            h('a', { class: 'btn primary', href: '#/tracker/log', text: 'Log a match' }),
             h('a', { class: 'btn', href: '#/maps', text: 'Strats' }),
             h('a', { class: 'btn', href: '#/profile', text: 'Edit profile' })))),
       h('div', { class: 'ed', style: 'max-width:80rem' },
@@ -1862,12 +1866,12 @@ function renderHome() {
           h('div', { class: 'tile accent' }, h('div', { class: 'tile-big', text: cm360(cur).toFixed(1) }), h('div', { class: 'tile-small', text: 'cm/360 · ' + cur.label })),
           h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: String(db.strats.length) }), h('div', { class: 'tile-small', text: db.strats.length === 1 ? 'strat written' : 'strats written' })),
           h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: rounds.length ? pct(wins, rounds.length) + '%' : '–' }), h('div', { class: 'tile-small', text: rounds.length ? `strat win rate (${wins}–${rounds.length - wins})` : 'strat win rate' })),
-          h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: lastSession ? (lastSession.rank || lastSession.rp || '–') : '–' }), h('div', { class: 'tile-small', text: lastSession ? 'last session, ' + fmtDate(lastSession.date) : 'no sessions logged' }))),
+          (() => { const td = mstats(db.matches.filter(m => dayOf(m) === today())); return h('a', { class: 'tile', href: '#/tracker' }, h('div', { class: 'tile-big', text: td.n ? `${td.w}–${td.l}` : '–' }), h('div', { class: 'tile-small', text: td.n ? `today · ${fmtKD(td.kd)} K/D` : 'no matches today' })); })()),
         h('div', { class: 'grid2' },
           section('Pick up where you left off', null, recentList),
           section('Goals', null, goals)),
         h('div', { class: 'grid2' },
-          section('Rank points', 'From your logged sessions', lineChart(rpPoints, { empty: 'Log sessions with rank points to see your climb.' })),
+          section('Rank points', 'From your logged matches', lineChart(rpPoints, { empty: 'Log ranked matches with their RP change to see your climb.' })),
           section('Your mains', null, mains.length
             ? h('div', { class: 'op-chips' }, mains.map(o => h('a', { class: 'op-chip ' + o.side, href: '#/ops/' + o.id }, Icons.opIcon(o, 34), h('span', { text: o.name }))))
             : h('div', { class: 'chart-empty' }, 'Pick your mains on your ', h('a', { class: 'link strong', href: '#/profile', text: 'profile' }), '.'))))));
@@ -2111,17 +2115,14 @@ function renderProgress() {
   const done = db.goals.filter(g => g.done).length;
 
   $('#main').replaceChildren(
-    h('header', { class: 'head' }, h('div', { class: 'head-num' }),
-      h('div', {}, h('h1', { class: 'head-title', text: 'Progress' }),
-        h('div', { class: 'head-sub', text: 'Log your sessions and watch how you improve.' })),
-      h('div', { class: 'head-tools' })),
+    trackerHead('daily'),
     h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed', style: 'max-width:80rem' },
       h('div', { class: 'tiles' },
         h('div', { class: 'tile accent' }, h('div', { class: 'tile-big', text: deaths || kills ? (kills / Math.max(1, deaths)).toFixed(2) : '–' }), h('div', { class: 'tile-small', text: `K/D overall (${kills}–${deaths})` })),
         h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: wins + losses ? pct(wins, wins + losses) + '%' : '–' }), h('div', { class: 'tile-small', text: `match win rate (${wins}–${losses})` })),
         h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: avgHs != null ? avgHs.toFixed(0) + '%' : '–' }), h('div', { class: 'tile-small', text: 'average headshot rate' })),
         h('div', { class: 'tile' }, h('div', { class: 'tile-big', text: String(sessions.length) }), h('div', { class: 'tile-small', text: sessions.length === 1 ? 'session logged' : 'sessions logged' }))),
-      section('Log a session', null, form),
+      section('Log a whole session', 'For days when you just want to jot down totals instead of each match', form),
       h('div', { class: 'grid2' },
         section('Rank points', null, lineChart(rpPts, { empty: 'Add rank points to two sessions to see your climb.' })),
         section('K/D per session', null, lineChart(kdPts, { color: 'var(--good)', fmt: v => v.toFixed(2), empty: 'Add kills and deaths to two sessions to see a trend.' }))),
@@ -2172,7 +2173,274 @@ function renderSettings() {
         row('Back up everything', 'Strats, boards, profile, progress and all your pictures in one file', h('button', { class: 'btn primary', text: 'Export backup', onclick: exportData })),
         row('Restore a backup', 'Replaces what is in the app now', h('button', { class: 'btn', text: 'Import backup', onclick: () => $('#importFile').click() })),
         (() => { const r = row('Data folder', 'Where Stratbook keeps your files', h('span', { class: 'hint', text: '…' })); Store.dataPath().then(p => { r.querySelector('.c span').textContent = p; }).catch(() => {}); return r; })())),
-      section('About', null, h('p', { class: 'hint', style: 'margin:0' }, 'Stratbook 2.0 · made for you · keyboard: ', h('kbd', { text: 'Ctrl K' }), ' search, ', h('kbd', { text: 'N' }), ' new strat on a map')))));
+      section('About', null, h('p', { class: 'hint', style: 'margin:0' }, 'Stratbook 2.1 · made for you · keyboard: ', h('kbd', { text: 'Ctrl K' }), ' search, ', h('kbd', { text: 'N' }), ' new strat on a map')))));
+}
+
+
+/* ================= tracker (your own R6 tracker, from matches you log) ================= */
+
+const PLAYLISTS = ['Ranked', 'Unranked', 'Quick Match', 'Custom / scrim', 'Arcade'];
+const nowLocal = () => { const d = new Date(); return `${today()}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+const dayOf = m => (m.date || '').slice(0, 10);
+
+function blankMatch() {
+  const last = [...db.matches].sort((a, b) => (b.date || '').localeCompare(a.date || ''))[0];
+  return { date: nowLocal(), playlist: last ? last.playlist : 'Ranked', map: last ? last.map : '', result: '', rw: '', rl: '',
+    kills: '', deaths: '', assists: '', hs: '', ops: [], rp: '', rank: last ? last.rank : (db.profile.rank || ''), mvp: false, notes: '' };
+}
+
+// Totals for a list of matches.
+function mstats(list) {
+  const t = { n: list.length, w: 0, l: 0, d: 0, k: 0, de: 0, a: 0, hs: 0, rw: 0, rl: 0, rp: 0, mvp: 0 };
+  for (const m of list) {
+    if (m.result === 'W') t.w++; else if (m.result === 'L') t.l++; else if (m.result === 'D') t.d++;
+    t.k += +m.kills || 0; t.de += +m.deaths || 0; t.a += +m.assists || 0; t.hs += +m.hs || 0;
+    t.rw += +m.rw || 0; t.rl += +m.rl || 0; t.rp += +m.rp || 0; if (m.mvp) t.mvp++;
+  }
+  t.kd = t.de ? t.k / t.de : t.k;
+  t.win = t.w + t.l ? t.w / (t.w + t.l) * 100 : null;
+  t.hsp = t.k ? t.hs / t.k * 100 : null;
+  t.kpr = t.rw + t.rl ? t.k / (t.rw + t.rl) : null;
+  t.avgK = t.n ? t.k / t.n : 0;
+  return t;
+}
+
+function streak(list) {
+  const s = [...list].filter(m => m.result === 'W' || m.result === 'L').sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  if (!s.length) return null;
+  let n = 0; for (const m of s) { if (m.result === s[0].result) n++; else break; }
+  return { kind: s[0].result, n };
+}
+
+const kdTone = kd => kd >= 1.15 ? 'good' : kd < 0.9 ? 'bad' : '';
+const fmtKD = v => (Math.round(v * 100) / 100).toFixed(2);
+const fmtPct = v => v == null ? '–' : Math.round(v) + '%';
+const fmtRP = v => (v > 0 ? '+' : '') + v;
+
+function trackerHead(active) {
+  const tabs = [['', 'Overview'], ['log', 'Log a match'], ['matches', 'Matches'], ['ops', 'Operators'], ['maps', 'Maps'], ['daily', 'Daily log']];
+  return h('header', { class: 'head' }, h('div', { class: 'head-num' }),
+    h('div', {}, h('h1', { class: 'head-title', text: 'Tracker' }),
+      h('div', { class: 'head-sub', text: 'Your own R6 tracker: log matches in a few seconds and get the stats.' })),
+    h('div', { class: 'head-tools' },
+      h('div', { class: 'seg' }, tabs.map(([k, label]) => h('a', { class: 'segl' + (active === k ? ' on' : ''), href: '#/tracker' + (k ? '/' + k : ''), text: label })))));
+}
+
+function matchRow(m) {
+  const map = mapById(m.map);
+  const ops = (m.ops || []).map(opById).filter(Boolean);
+  const kd = (+m.deaths || 0) ? (+m.kills || 0) / (+m.deaths) : (+m.kills || 0);
+  return h('a', { class: 'match ' + (m.result === 'W' ? 'win' : m.result === 'L' ? 'loss' : 'draw'), href: '#/tracker/log/' + m.id, title: 'Click to edit' },
+    h('span', { class: 'match-res', text: m.result === 'W' ? 'Win' : m.result === 'L' ? 'Loss' : m.result === 'D' ? 'Draw' : '–' }),
+    h('span', { class: 'thumb', style: map ? `background-image:${bannerUrl(map)}` : '' }),
+    h('span', { class: 'match-main' },
+      h('span', { class: 't', text: (map ? map.name : 'Unknown map') + (m.rw !== '' || m.rl !== '' ? `  ${m.rw || 0}–${m.rl || 0}` : '') }),
+      h('span', { class: 's', text: `${m.playlist} · ${fmtDate(dayOf(m))}${m.date && m.date.length > 10 ? ' ' + m.date.slice(11, 16) : ''}${m.mvp ? ' · MVP' : ''}` })),
+    h('span', { class: 'match-ops' }, ops.slice(0, 4).map(o => Icons.opIcon(o, 26))),
+    h('span', { class: 'match-kda' }, h('b', { text: `${m.kills || 0} / ${m.deaths || 0} / ${m.assists || 0}` }), h('span', { class: 's ' + kdTone(kd), text: fmtKD(kd) + ' K/D' })),
+    h('span', { class: 'match-rp ' + ((+m.rp || 0) > 0 ? 'up' : (+m.rp || 0) < 0 ? 'down' : ''), text: m.rp !== '' && m.rp != null ? fmtRP(+m.rp) + ' RP' : '' }));
+}
+
+function statTile(big, small, cls) {
+  return h('div', { class: 'tile' + (cls ? ' ' + cls : '') }, h('div', { class: 'tile-big', text: big }), h('div', { class: 'tile-small', text: small }));
+}
+
+function renderTracker(tab, id) {
+  if (tab === 'daily') { renderProgress(); return; }
+  if (tab === 'log') { renderLogMatch(id); return; }
+  const all = [...db.matches].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+  const body = h('div', { class: 'ed', style: 'max-width:84rem' });
+  if (!all.length && tab !== 'log') {
+    body.append(h('div', { class: 'empty', style: 'padding-left:0' },
+      h('h3', { text: 'No matches yet' }),
+      h('p', { text: 'After each match, log it here. It takes a few seconds, and your K/D, win rate, rank chart and operator and map stats build up automatically.' }),
+      h('a', { class: 'btn primary', href: '#/tracker/log', text: 'Log your first match' })));
+  } else if (!tab) body.append(...trackerOverview(all));
+  else if (tab === 'matches') body.append(...trackerMatches(all));
+  else if (tab === 'ops') body.append(...trackerOps(all));
+  else if (tab === 'maps') body.append(...trackerMaps(all));
+  $('#main').replaceChildren(trackerHead(tab || ''), h('section', { class: 'detail', style: 'flex:1' }, body));
+}
+
+function trackerOverview(all) {
+  const t = mstats(all);
+  const todays = all.filter(m => dayOf(m) === today());
+  const td = mstats(todays);
+  const st = streak(all);
+  const ranked = all.filter(m => m.playlist === 'Ranked');
+
+  // Rank points over ranked matches: running total of RP changes.
+  let run = 0;
+  const rpPts = ranked.filter(m => m.rp !== '' && m.rp != null).map(m => { run += +m.rp; return { y: run, label: fmtDate(dayOf(m)) }; });
+  // K/D per day.
+  const days = [...new Set(all.map(dayOf))];
+  const kdPts = days.map(d => { const s = mstats(all.filter(m => dayOf(m) === d)); return { y: +s.kd.toFixed(2), label: fmtDate(d) }; });
+
+  const opCounts = new Map();
+  for (const m of all) for (const id of m.ops || []) opCounts.set(id, [...(opCounts.get(id) || []), m]);
+  const topOps = [...opCounts.entries()].map(([id, ms]) => ({ op: opById(id), s: mstats(ms) })).filter(x => x.op).sort((a, b) => b.s.n - a.s.n).slice(0, 6);
+  const mapRows = db.maps.map(mp => ({ mp, s: mstats(all.filter(m => m.map === mp.id)) })).filter(x => x.s.n);
+  const bestMap = [...mapRows].filter(x => x.s.win != null).sort((a, b) => b.s.win - a.s.win || b.s.n - a.s.n)[0];
+  const worstMap = [...mapRows].filter(x => x.s.win != null).sort((a, b) => a.s.win - b.s.win || b.s.n - a.s.n)[0];
+
+  return [
+    h('div', { class: 'today' },
+      h('div', { class: 'today-head' }, h('b', { text: 'Today' }), h('span', { class: 'hint', text: fmtDate(today()) }),
+        h('a', { class: 'btn primary', href: '#/tracker/log', style: 'margin-left:auto', text: '+ Log a match' })),
+      todays.length
+        ? h('div', { class: 'today-grid' },
+            statTile(`${td.w}–${td.l}`, `${td.n} match${td.n === 1 ? '' : 'es'} · ${fmtPct(td.win)} wins`),
+            statTile(fmtKD(td.kd), `K/D (${td.k} kills, ${td.de} deaths)`, kdTone(td.kd)),
+            statTile(fmtPct(td.hsp), 'headshots'),
+            statTile(td.rp ? fmtRP(td.rp) : '0', 'rank points today', td.rp > 0 ? 'good' : td.rp < 0 ? 'bad' : ''))
+        : h('p', { class: 'hint', style: 'margin:.2rem 0 0', text: 'Nothing logged today yet.' })),
+    h('div', { class: 'tiles', style: 'margin-top:var(--gap)' },
+      statTile(fmtKD(t.kd), `K/D overall (${t.k}–${t.de})`, 'accent'),
+      statTile(fmtPct(t.win), `win rate (${t.w}–${t.l}${t.d ? '–' + t.d : ''})`),
+      statTile(t.kpr != null ? t.kpr.toFixed(2) : '–', 'kills per round'),
+      statTile(fmtPct(t.hsp), 'headshot rate')),
+    h('div', { class: 'tiles', style: 'margin-top:var(--gap)' },
+      statTile(String(t.n), t.n === 1 ? 'match logged' : 'matches logged'),
+      statTile(t.avgK.toFixed(1), 'kills per match'),
+      statTile(st ? `${st.n} ${st.kind === 'W' ? 'W' : 'L'}` : '–', st ? (st.kind === 'W' ? 'win streak' : 'losing streak') : 'streak', st ? (st.kind === 'W' ? 'good' : 'bad') : ''),
+      statTile(String(t.mvp), 'MVPs')),
+    h('div', { class: 'grid2' },
+      section('Rank points', 'Ranked matches, change since you started logging', lineChart(rpPts, { fmt: v => Math.round(v), empty: 'Add the RP change to ranked matches to see your climb.' })),
+      section('K/D by day', null, lineChart(kdPts, { color: 'var(--good)', fmt: v => v.toFixed(2), empty: 'Log matches on two different days to see a trend.' }))),
+    section('Recent matches', null, h('div', { class: 'matches' }, [...all].reverse().slice(0, 8).map(matchRow),
+      all.length > 8 ? h('a', { class: 'link strong', href: '#/tracker/matches', text: 'See all ' + all.length + ' matches' }) : null)),
+    h('div', { class: 'grid2' },
+      section('Most played operators', null, topOps.length
+        ? h('div', { class: 'bars' }, topOps.map(x => h('a', { class: 'bar-row', href: '#/ops/' + x.op.id },
+            h('span', { class: 'bar-lbl' }, Icons.opIcon(x.op, 24), h('span', { text: x.op.name })),
+            h('span', { class: 'bar-track' }, h('span', { class: 'bar-fill ' + (x.s.win >= 55 ? 'good' : x.s.win != null && x.s.win < 45 ? 'bad' : ''), style: `width:${x.s.win ?? 0}%` }), h('span', { class: 'bar-50' })),
+            h('span', { class: 'bar-val', text: `${x.s.n}×  ${fmtPct(x.s.win)}  ${fmtKD(x.s.kd)}` }))))
+        : h('p', { class: 'hint', text: 'Pick the operators you played when you log a match.' })),
+      section('Maps', bestMap ? `Best: ${bestMap.mp.name} (${fmtPct(bestMap.s.win)}) · Worst: ${worstMap.mp.name} (${fmtPct(worstMap.s.win)})` : null,
+        mapRows.length ? h('div', { class: 'bars' }, mapRows.sort((a, b) => b.s.n - a.s.n).slice(0, 8).map(x => h('a', { class: 'bar-row', href: '#/tracker/maps' },
+          h('span', { class: 'bar-lbl' }, h('span', { class: 'mini-banner', style: `background-image:${bannerUrl(x.mp)}` }), h('span', { text: x.mp.name })),
+          h('span', { class: 'bar-track' }, h('span', { class: 'bar-fill', style: `width:${x.s.win ?? 0}%;background:${mapColor(x.mp)}` }), h('span', { class: 'bar-50' })),
+          h('span', { class: 'bar-val', text: `${x.s.n}×  ${fmtPct(x.s.win)}` }))))
+        : h('p', { class: 'hint', text: 'No maps yet.' }))),
+    section('Goals', null, h('div', {}, db.goals.map(goalRow), db.goals.length ? null : h('p', { class: 'hint', text: 'Add goals on the Daily log tab.' })))
+  ];
+}
+
+function trackerMatches(all) {
+  ui.mFilter = ui.mFilter || { playlist: '', map: '' };
+  const f = ui.mFilter;
+  const list = [...all].reverse().filter(m => (!f.playlist || m.playlist === f.playlist) && (!f.map || m.map === f.map));
+  const t = mstats(list);
+  return [
+    h('div', { class: 'pic-tools', style: 'margin-top:.4rem' },
+      h('select', { value: f.playlist, onchange: e => { f.playlist = e.target.value; route(); } }, h('option', { value: '', text: 'All playlists' }), PLAYLISTS.map(p => h('option', { value: p, text: p }))),
+      h('select', { value: f.map, onchange: e => { f.map = e.target.value; route(); } }, h('option', { value: '', text: 'All maps' }), db.maps.map(m => h('option', { value: m.id, text: m.name }))),
+      h('span', { class: 'hint', text: `${t.n} matches · ${fmtPct(t.win)} wins · ${fmtKD(t.kd)} K/D · ${fmtPct(t.hsp)} headshots` })),
+    h('div', { class: 'matches' }, list.map(matchRow))
+  ];
+}
+
+function trackerOps(all) {
+  const by = new Map();
+  for (const m of all) for (const id of m.ops || []) by.set(id, [...(by.get(id) || []), m]);
+  const rows = [...by.entries()].map(([id, ms]) => ({ op: opById(id), s: mstats(ms) })).filter(x => x.op).sort((a, b) => b.s.n - a.s.n);
+  const head = ['Operator', 'Matches', 'Win %', 'W–L', 'Kills', 'Deaths', 'K/D', 'Headshots', 'K per match'];
+  return [
+    h('p', { class: 'hint', style: 'margin:.4rem 0 .2rem', text: 'Each match counts for every operator you picked in it, so stats from matches where you played more than one operator are shared between them.' }),
+    section('Operators', null, rows.length ? h('div', { style: 'overflow-x:auto' }, h('table', { class: 'session-table' },
+      h('thead', {}, h('tr', {}, head.map(x => h('th', { text: x })))),
+      h('tbody', {}, rows.map(x => h('tr', {},
+        h('td', {}, h('a', { class: 'op-cell', href: '#/ops/' + x.op.id }, Icons.opIcon(x.op, 26), h('span', { text: x.op.name }))),
+        h('td', { class: 'num', text: x.s.n }), h('td', { class: 'num', text: fmtPct(x.s.win) }), h('td', { class: 'num', text: `${x.s.w}–${x.s.l}` }),
+        h('td', { class: 'num', text: x.s.k }), h('td', { class: 'num', text: x.s.de }),
+        h('td', { class: 'num ' + kdTone(x.s.kd), text: fmtKD(x.s.kd) }), h('td', { class: 'num', text: fmtPct(x.s.hsp) }),
+        h('td', { class: 'num', text: x.s.avgK.toFixed(1) })))))) : h('p', { class: 'hint', text: 'Pick the operators you played when you log a match.' }))
+  ];
+}
+
+function trackerMaps(all) {
+  const rows = db.maps.map(mp => ({ mp, s: mstats(all.filter(m => m.map === mp.id)) })).filter(x => x.s.n).sort((a, b) => b.s.n - a.s.n);
+  return [h('div', { class: 'map-stats' }, rows.map(x => h('a', { class: 'map-stat', href: '#/maps/' + x.mp.id, style: `--map:${mapColor(x.mp)};background-image:linear-gradient(90deg, var(--surface) 35%, transparent), ${bannerUrl(x.mp)}` },
+    h('div', { class: 'ms-name', text: x.mp.name }),
+    h('div', { class: 'ms-vals' },
+      h('span', {}, h('b', { text: fmtPct(x.s.win) }), ' wins'),
+      h('span', {}, h('b', { text: `${x.s.w}–${x.s.l}` }), ' record'),
+      h('span', {}, h('b', { class: kdTone(x.s.kd), text: fmtKD(x.s.kd) }), ' K/D'),
+      h('span', {}, h('b', { text: x.s.rw + x.s.rl ? `${x.s.rw}–${x.s.rl}` : '–' }), ' rounds'))))),
+    rows.length ? null : h('p', { class: 'hint', text: 'No maps logged yet.' })];
+}
+
+function renderLogMatch(id) {
+  const editing = id && db.matches.find(m => m.id === id);
+  if (!ui.matchDraft || ui.matchDraft._for !== (id || 'new')) ui.matchDraft = Object.assign(editing ? JSON.parse(JSON.stringify(editing)) : blankMatch(), { _for: id || 'new' });
+  const m = ui.matchDraft;
+
+  const resBtn = (v, label) => h('button', { class: 'res-btn ' + v + (m.result === v ? ' on' : ''), text: label, onclick: () => { m.result = m.result === v ? '' : v; paintRes(); } });
+  const resWrap = h('div', { class: 'res-btns' });
+  const paintRes = () => resWrap.replaceChildren(resBtn('W', 'Win'), resBtn('L', 'Loss'), resBtn('D', 'Draw'));
+  paintRes();
+
+  const opQuery = { v: '' };
+  const picks = h('div', {});
+  const paintPicks = () => {
+    const q = opQuery.v.trim().toLowerCase();
+    picks.replaceChildren(...['atk', 'def'].map(side => h('div', { class: 'op-pick-row' },
+      h('span', { class: 'lbl', text: side === 'atk' ? 'Attack' : 'Defense' }),
+      h('div', { class: 'op-pick' }, db.operators.filter(o => o.side === side && (!q || o.name.toLowerCase().includes(q))).sort(byName).map(o =>
+        h('button', { class: 'op-pick-btn' + (m.ops.includes(o.id) ? ' on' : ''), title: o.name, onclick: () => {
+          m.ops = m.ops.includes(o.id) ? m.ops.filter(x => x !== o.id) : [...m.ops, o.id]; paintPicks();
+        } }, Icons.opIcon(o, 34), h('span', { text: o.name })))))));
+  };
+  paintPicks();
+
+  const numF = (key, label, ph) => h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: label }),
+    h('input', { class: 'in', type: 'number', value: m[key] ?? '', placeholder: ph || '', oninput: e => { m[key] = e.target.value === '' ? '' : +e.target.value; } }));
+
+  const saveIt = more => {
+    if (!m.result) { toast('Pick Win, Loss or Draw first'); return; }
+    const clean = { ...m }; delete clean._for;
+    if (editing) Object.assign(editing, clean);
+    else { clean.id = uid(); db.matches.push(clean); }
+    if (clean.rank) db.profile.rank = clean.rank;
+    save();
+    const next = blankMatch();
+    ui.matchDraft = more ? Object.assign(next, { _for: 'new', ops: [...m.ops] }) : null;
+    toast(editing ? 'Match updated' : 'Match logged');
+    go(more ? '#/tracker/log' : '#/tracker');
+    if (more) route();
+  };
+
+  const form = h('div', { class: 'ed', style: 'max-width:72rem' },
+    section(editing ? 'Edit match' : 'Log a match', 'Only the result is required. Fill in what you remember.', h('div', {},
+      h('div', { class: 'log-top' },
+        resWrap,
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'Map' }),
+          h('select', { value: m.map, onchange: e => { m.map = e.target.value; } }, h('option', { value: '', text: 'Choose map' }), db.maps.map(mp => h('option', { value: mp.id, text: mp.name })))),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'Playlist' }),
+          h('select', { value: m.playlist, onchange: e => { m.playlist = e.target.value; } }, PLAYLISTS.map(p => h('option', { value: p, text: p })))),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'When' }),
+          h('input', { class: 'in', type: 'datetime-local', value: m.date, onchange: e => { m.date = e.target.value; } }))),
+      h('div', { class: 'log-form', style: 'margin-top:1rem' },
+        numF('rw', 'Rounds won', '4'), numF('rl', 'Rounds lost', '2'),
+        numF('kills', 'Kills'), numF('deaths', 'Deaths'), numF('assists', 'Assists'), numF('hs', 'Headshot kills'),
+        numF('rp', 'RP change', '+28 or -22'),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'Rank after' }),
+          h('input', { class: 'in', type: 'text', value: m.rank || '', placeholder: 'e.g. Plat 2', oninput: e => { m.rank = e.target.value; } })),
+        h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: 'MVP' }), h('div', { style: 'height:2.3rem;display:flex;align-items:center' }, toggleCtl(m.mvp, v => { m.mvp = v; })))))),
+    section('Operators you played', 'Click every operator you used this match', h('div', {},
+      h('input', { class: 'in', type: 'text', placeholder: 'Find operator', style: 'width:15rem;margin-bottom:.6rem', oninput: e => { opQuery.v = e.target.value; paintPicks(); } }),
+      picks)),
+    section('Notes', null, h('textarea', { class: 'notes', value: m.notes || '', placeholder: 'What worked, what didn\'t, who was annoying', oninput: e => { m.notes = e.target.value; } })),
+    h('div', { class: 'loadout-foot', style: 'margin-top:var(--gap)' },
+      h('button', { class: 'btn primary', text: editing ? 'Save changes' : 'Save match', onclick: () => saveIt(false) }),
+      editing ? null : h('button', { class: 'btn', text: 'Save and log another', onclick: () => saveIt(true) }),
+      h('a', { class: 'link', href: '#/tracker', text: 'Cancel', onclick: () => { ui.matchDraft = null; } }),
+      editing ? h('button', { class: 'danger', style: 'margin-left:auto', text: 'Delete match', onclick: async () => {
+        if (!(await confirmBox('Delete this match?', null, 'Delete', true))) return;
+        db.matches = db.matches.filter(x => x !== editing); ui.matchDraft = null; save(); go('#/tracker');
+      } }) : null));
+
+  $('#main').replaceChildren(trackerHead('log'), h('section', { class: 'detail', style: 'flex:1' }, form));
 }
 
 

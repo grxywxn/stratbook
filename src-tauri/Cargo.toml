@@ -1,6 +1,6 @@
 [package]
 name = "stratbook"
-version = "2.0.0"
+version = "2.1.0"
 description = "Stratbook: strats and operator guides for Rainbow Six Siege"
 edition = "2021"
 
