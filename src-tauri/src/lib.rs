@@ -144,7 +144,10 @@ async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
         let _ = win.set_focus();
         return Ok(());
     }
-    let mut builder = tauri::WebviewWindowBuilder::new(&app, "web", tauri::WebviewUrl::External(parsed))
+    let mut builder = tauri::WebviewWindowBuilder::new(&app, "web", tauri::WebviewUrl::External(parsed.clone()))
+        // Must match the main window's browser arguments exactly: WebView2
+        // refuses a second webview on the same data folder with different ones.
+        .additional_browser_args(BROWSER_ARGS)
         .title("Stratbook web search: drag a picture into Stratbook, or right-click and Copy image")
         .inner_size(820.0, 880.0)
         .min_inner_size(420.0, 400.0)
@@ -159,8 +162,29 @@ async fn open_web(app: AppHandle, url: String) -> Result<(), String> {
             builder = builder.position(x, pos.y as f64 / scale);
         }
     }
-    builder.build().map_err(|e| e.to_string())?;
+    if builder.build().is_err() {
+        // Fall back to the default browser; dragging from it works too.
+        open_in_default_browser(parsed.as_str())?;
+    }
     Ok(())
+}
+
+const BROWSER_ARGS: &str = "--disable-features=msWebOoUI,msPdfOOUI,msSmartScreenProtection";
+
+fn open_in_default_browser(url: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(url)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        Err("no browser available".into())
+    }
 }
 
 /// Download an image from a web address (used when a link, not a file, is
