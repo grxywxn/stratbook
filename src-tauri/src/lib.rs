@@ -212,7 +212,20 @@ fn open_in_default_browser(url: &str) -> Result<(), String> {
 
 const UBI_SESSIONS: &str = "https://public-ubiservices.ubi.com/v3/profiles/sessions";
 const UBI_FULL_PROFILES: &str = "https://public-ubiservices.ubi.com/v2/spaces/0d2ae42d-4c27-4cb7-af6c-2099062302bb/title/r6s/skill/full_profiles";
-const UBI_APP_IDS: [&str; 2] = ["3587dcbb-7f81-457c-9781-0e3f29f6f56a", "39baebad-39e5-4552-8c25-2c9b919064e2"];
+// Ubisoft refuses retired app ids with "The Ubi-AppId header is invalid", so
+// several known ones are tried in order and the accepted one is remembered.
+const UBI_APP_IDS: [&str; 5] = [
+    "314d4fef-e568-454a-ae06-43e3bece12a6", // Ubisoft web (Siege stats pages)
+    "f68a4bb5-608a-4ff2-8123-be8ef797e0a6", // Ubisoft Connect for PC
+    "685a3038-2b04-47ee-9c5a-6403381a46aa", // ubisoft.com Siege pages
+    "3587dcbb-7f81-457c-9781-0e3f29f6f56a",
+    "39baebad-39e5-4552-8c25-2c9b919064e2",
+];
+
+fn appid_refused(e: &str) -> bool {
+    let l = e.to_lowercase();
+    l.contains("appid") || l.contains("app id") || l.contains("application")
+}
 const UBI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
 
 fn ubi_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -293,14 +306,13 @@ async fn ubi_login(app: AppHandle, email: String, password: String) -> Result<se
         for id in UBI_APP_IDS {
             match ubi_session_call(&basic, id, None) {
                 Ok(reply) => return ubi_accept(&app, reply, id),
-                Err(e) => {
-                    // Wrong credentials won't get better with another app id.
-                    if e.contains("wrong email") || e.contains("too many") { return Err(e); }
-                    last = e;
-                }
+                // A retired app id: try the next one.
+                Err(e) if appid_refused(&e) => last = e,
+                // Anything else (wrong password, too many tries) won't change with another id.
+                Err(e) => return Err(e),
             }
         }
-        Err(last)
+        Err(format!("Ubisoft refused every app id Stratbook knows. Tell Claude this message so it can be updated. ({last})"))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -334,12 +346,26 @@ fn ubi_logout(app: AppHandle) -> Result<(), String> {
 }
 
 fn ubi_get_profiles(s: &serde_json::Value) -> Result<String, (u16, String)> {
+    let first = s["appId"].as_str().unwrap_or(UBI_APP_IDS[0]).to_string();
+    let mut ids = vec![first.clone()];
+    ids.extend(UBI_APP_IDS.iter().filter(|i| **i != first).map(|i| i.to_string()));
+    let mut last = (0u16, String::new());
+    for id in ids {
+        match ubi_get_profiles_with(s, &id) {
+            Err((code, body)) if code == 400 && appid_refused(&body) => last = (code, body),
+            other => return other,
+        }
+    }
+    Err(last)
+}
+
+fn ubi_get_profiles_with(s: &serde_json::Value, app_id: &str) -> Result<String, (u16, String)> {
     let pid = s["profileId"].as_str().unwrap_or("");
     let url = format!("{UBI_FULL_PROFILES}?profile_ids={pid}&platform_families=pc");
     let req = ureq::get(&url)
         .timeout(Duration::from_secs(20))
         .set("Authorization", &format!("Ubi_v1 t={}", s["ticket"].as_str().unwrap_or("")))
-        .set("Ubi-AppId", s["appId"].as_str().unwrap_or(UBI_APP_IDS[0]))
+        .set("Ubi-AppId", app_id)
         .set("Ubi-SessionId", s["sessionId"].as_str().unwrap_or(""))
         .set("expiration", s["expiration"].as_str().unwrap_or(""))
         .set("Ubi-LocaleCode", "en-US")
