@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stratbook</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">Stratbook</span>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#/maps" data-tab="maps">Maps</a>
+      <a href="#/ops" data-tab="ops">Operators</a>
+      <a href="#/stats" data-tab="stats">Stats</a>
+    </nav>
+    <div class="rail-scroll" id="rail"></div>
+    <footer class="rail-foot">
+      <div class="save-state" id="saveState">Loading</div>
+      <div class="foot-actions">
+        <button type="button" class="link" id="findBtn" title="Search everything">Find <kbd>Ctrl K</kbd></button>
+        <button type="button" class="link" id="exportBtn">Export</button>
+        <button type="button" class="link" id="importBtn">Import</button>
+      </div>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <input type="file" id="imageFile" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
+    </footer>
+  </aside>
+  <main class="main" id="main"></main>
+</div>
+
+<div class="finder" id="finder" hidden>
+  <div class="finder-box">
+    <input id="finderInput" type="text" placeholder="Search strats, operators, maps" autocomplete="off" spellcheck="false">
+    <ol id="finderResults"></ol>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <form class="modal-box" id="modalForm">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <input class="in" id="modalInput" type="text" autocomplete="off" spellcheck="false">
+    <div class="modal-btns">
+      <button type="button" class="btn" id="modalCancel">Cancel</button>
+      <button type="submit" class="btn primary" id="modalOk">OK</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="seed.js"></script>
+<script src="store.js"></script>
+<script src="icons.js"></script>
+<script src="board.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

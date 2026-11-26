@@ -1,0 +1,13 @@
+{
+  "name": "stratbook",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "tauri": "tauri",
+    "app": "tauri dev",
+    "package": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0"
+  }
+}
