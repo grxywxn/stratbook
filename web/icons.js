@@ -23,25 +23,37 @@ window.Icons = (() => {
 
   const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+  // Each operator gets its own hue: warm for attackers, cool for defenders,
+  // so the side still reads at a glance.
+  function hue(name, side) {
+    const h = hash(name);
+    return side === 'def' ? 168 + (h % 92) : (330 + (h % 80)) % 360;
+  }
+
   // Returns the inner SVG markup of an emblem on a 40x40 grid.
   function emblemBody(name, side) {
-    const c = COLORS[side] || COLORS.atk;
+    const H = hue(name, side);
+    const id = 'e' + hash(name + side).toString(36);
+    const light = `hsl(${H} 70% 62%)`, mid = `hsl(${H} 55% 34%)`, dark = `hsl(${H} 60% 14%)`;
     const v = hash(name) % 6;
-    const shape = side === 'def'
-      ? `<path d="M20 2.5 L36.5 8 V21 C36.5 30 29.5 35.5 20 37.5 C10.5 35.5 3.5 30 3.5 21 V8 Z" fill="${c.fill}" stroke="${c.line}" stroke-width="1.6"/>`
-      : `<path d="M3 3 H29 L37 11 V37 H3 Z" fill="${c.fill}" stroke="${c.line}" stroke-width="1.6"/>`;
+    const outline = side === 'def'
+      ? 'M20 2.5 L36.5 8 V21 C36.5 30 29.5 35.5 20 37.5 C10.5 35.5 3.5 30 3.5 21 V8 Z'
+      : 'M3 3 H29 L37 11 V37 H3 Z';
     const marks = [
-      `<rect x="7" y="31" width="26" height="2" fill="${c.mark}"/>`,
-      `<rect x="7" y="7" width="2" height="8" fill="${c.mark}"/>`,
-      `<circle cx="11" cy="31" r="1.6" fill="${c.mark}"/><circle cx="16" cy="31" r="1.6" fill="${c.mark}"/>`,
-      `<path d="M26 33 L33 26" stroke="${c.mark}" stroke-width="2"/>`,
-      `<rect x="16" y="6" width="8" height="2" fill="${c.mark}"/>`,
-      `<path d="M7 33 H13 M7 30 H11" stroke="${c.mark}" stroke-width="1.6"/>`
+      `<rect x="7" y="31" width="26" height="2.2" fill="${light}"/>`,
+      `<rect x="7" y="7" width="2.2" height="9" fill="${light}"/>`,
+      `<circle cx="11" cy="31" r="1.7" fill="${light}"/><circle cx="16" cy="31" r="1.7" fill="${light}"/>`,
+      `<path d="M25 34 L33 26" stroke="${light}" stroke-width="2.2"/>`,
+      `<rect x="15" y="6" width="10" height="2.2" fill="${light}"/>`,
+      `<path d="M7 33 H14 M7 29.5 H11" stroke="${light}" stroke-width="1.8"/>`
     ];
     const t = code(name);
     const size = t.length > 2 ? 11.5 : 13;
-    return shape + marks[v] +
-      `<text x="20" y="${side === 'def' ? 23.5 : 24.5}" text-anchor="middle" font-family="Bahnschrift, 'DIN Alternate', 'Arial Narrow', sans-serif" font-weight="700" font-size="${size}" letter-spacing=".4" fill="#ebe6dc">${esc(t)}</text>`;
+    return `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${mid}"/><stop offset="1" stop-color="${dark}"/></linearGradient></defs>` +
+      `<path d="${outline}" fill="url(#${id})" stroke="${light}" stroke-width="1.7" stroke-linejoin="round"/>` +
+      `<path d="${outline}" fill="none" stroke="${side === 'def' ? '#3d8fd6' : '#e8742a'}" stroke-opacity="0.55" stroke-width="0.8" transform="translate(20 20) scale(0.86) translate(-20 -20)"/>` +
+      marks[v] +
+      `<text x="20" y="${side === 'def' ? 23.5 : 24.5}" text-anchor="middle" font-family="Bahnschrift, 'DIN Alternate', 'Arial Narrow', sans-serif" font-weight="700" font-size="${size}" letter-spacing=".4" fill="#fffaf0">${esc(t)}</text>`;
   }
 
   function emblemSVG(name, side, px) {
@@ -104,5 +116,5 @@ window.Icons = (() => {
     return `<svg viewBox="-14 -14 28 28" width="${px}" height="${px}" aria-hidden="true">${utilBody(k, 10)}</svg>`;
   }
 
-  return { emblemBody, emblemSVG, opIcon, code, UTIL, utilByKey, utilBody, utilSVG, esc };
+  return { emblemBody, emblemSVG, opIcon, code, hue, UTIL, utilByKey, utilBody, utilSVG, esc };
 })();

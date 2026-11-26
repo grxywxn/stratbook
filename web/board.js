@@ -79,9 +79,16 @@ window.Board = (() => {
         const d = it.pts.map((p, i) => (i ? 'L' : 'M') + (p[0] * W).toFixed(1) + ' ' + (p[1] * H).toFixed(1)).join(' ');
         el('path', { d, fill: 'none', stroke: 'transparent', 'stroke-width': 18, 'stroke-linecap': 'round' }, g);
         el('path', {
-          d, fill: 'none', stroke: it.c || COLORS[0], 'stroke-width': 4, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-          'stroke-dasharray': it.dash ? '10 8' : null, 'marker-end': `url(#ah${colorIdx(it.c)})`
+          d, fill: 'none', stroke: it.c || COLORS[0], 'stroke-width': it.pen ? 3 : 4, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+          'stroke-dasharray': it.dash ? '10 8' : null, 'marker-end': it.pen ? null : `url(#ah${colorIdx(it.c)})`
         }, g);
+      } else if (it.t === 'zone') {
+        const c = it.c || COLORS[0];
+        el('rect', { x: it.x * W, y: it.y * H, width: it.w * W, height: it.h * H, fill: c, 'fill-opacity': 0.16, stroke: c, 'stroke-width': 2, 'stroke-dasharray': it.dash ? '8 6' : null }, g);
+        if (it.label) {
+          const tx = el('text', { x: it.x * W + 8, y: it.y * H + 20, 'font-family': 'Bahnschrift, "Arial Narrow", sans-serif', 'font-size': 15, 'font-weight': 700, 'letter-spacing': 1, fill: c, stroke: '#111110', 'stroke-width': 3.5, 'paint-order': 'stroke' }, g);
+          tx.textContent = it.label.toUpperCase();
+        }
       } else if (it.t === 'op') {
         const op = o.findOp ? o.findOp(it.op) : null;
         const [x, y] = P(it);
@@ -134,6 +141,49 @@ window.Board = (() => {
     }
     function svgSpan(markup) { const s = hel('span', 'bt-ico'); s.innerHTML = markup; return s; }
 
+    // Drag a token from the toolbar and drop it on the map. A plain click
+    // still picks the tool instead.
+    function dragBtn(b, ghostFn, makeItem) {
+      b.addEventListener('pointerdown', e => {
+        if (e.button !== 0) return;
+        const start = [e.clientX, e.clientY];
+        let ghost = null;
+        const move = ev => {
+          if (!ghost && Math.hypot(ev.clientX - start[0], ev.clientY - start[1]) < 6) return;
+          if (!ghost) {
+            ghost = hel('div', 'drag-ghost');
+            ghost.append(ghostFn());
+            document.body.append(ghost);
+            stageBox.classList.add('drop-ready');
+          }
+          ghost.style.left = ev.clientX + 'px';
+          ghost.style.top = ev.clientY + 'px';
+          const r = svg.getBoundingClientRect();
+          stageBox.classList.toggle('drop-over', ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom);
+        };
+        const up = ev => {
+          window.removeEventListener('pointermove', move);
+          window.removeEventListener('pointerup', up);
+          if (!ghost) return;
+          ghost.remove();
+          stageBox.classList.remove('drop-ready', 'drop-over');
+          b.dataset.dragged = '1';
+          const r = svg.getBoundingClientRect();
+          if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
+            o.layer.push(makeItem(pt(ev)));
+            sel = o.layer.length - 1;
+            changed();
+          }
+        };
+        window.addEventListener('pointermove', move);
+        window.addEventListener('pointerup', up);
+      });
+      b.addEventListener('click', e => {
+        if (b.dataset.dragged) { delete b.dataset.dragged; e.stopImmediatePropagation(); }
+      }, true);
+      return b;
+    }
+
     function setTool(name, extra) {
       tool.name = name;
       if (extra) Object.assign(tool, extra);
@@ -149,21 +199,33 @@ window.Board = (() => {
         btn('Move', 'Select and move (V). Delete removes the selected item.', tool.name === 'select', () => setTool('select')),
         o.mode === 'callouts'
           ? btn('Callout', 'Click the blueprint to place a callout (T)', tool.name === 'text', () => setTool('text'))
-          : btn('Path', 'Drag to draw a route or arrow (P)', tool.name === 'path', () => setTool('path')),
+          : btn('Route', 'Drag to draw a route with an arrowhead (R)', tool.name === 'path', () => setTool('path')),
+        o.mode === 'callouts' ? null : btn('Arrow', 'Drag a straight arrow, e.g. a sightline or push (A)', tool.name === 'line', () => setTool('line')),
+        o.mode === 'callouts' ? null : btn('Pen', 'Freehand marker, no arrowhead (D)', tool.name === 'pen', () => setTool('pen')),
+        o.mode === 'callouts' ? null : btn('Zone', 'Drag a box to mark an area: a hold, a crossfire, a no-go (Z)', tool.name === 'zone', () => setTool('zone')),
         o.mode === 'callouts' ? null : btn('Text', 'Click to place a note (T)', tool.name === 'text', () => setTool('text')),
         btn('Erase', 'Click an item to remove it (E)', tool.name === 'erase', () => setTool('erase'))].filter(Boolean));
       groups.push(tools);
 
       if (o.mode !== 'callouts') {
-        if (o.lineup && o.lineup.length) {
-          const ops = hel('div', 'bt-group');
-          ops.append(hel('span', 'bt-lbl', 'Ops'));
-          o.lineup.forEach(op => ops.append(btn(Icons.opIcon(op, 24), 'Place ' + op.name, tool.name === 'op' && tool.op === op.id, () => setTool('op', { op: op.id }), 'icon')));
-          groups.push(ops);
+        const ops = hel('div', 'bt-group');
+        ops.append(hel('span', 'bt-lbl', 'Ops'));
+        (o.lineup || []).forEach(op => ops.append(dragBtn(btn(Icons.opIcon(op, 26), op.name + ': drag onto the map, or click then click the map', tool.name === 'op' && tool.op === op.id, () => setTool('op', { op: op.id }), 'icon'),
+          () => Icons.opIcon(op, 42), p => ({ t: 'op', op: op.id, x: p[0], y: p[1] }))));
+        if (o.allOps && o.allOps.length) {
+          const pick = hel('select', 'bt-select');
+          pick.title = 'Any other operator';
+          pick.append(new Option((o.lineup || []).length ? '+ Other' : '+ Operator', ''));
+          o.allOps.forEach(op => pick.append(new Option(op.name, op.id)));
+          if (tool.name === 'op' && tool.op && !(o.lineup || []).some(x => x.id === tool.op)) pick.value = tool.op;
+          pick.addEventListener('change', () => { if (pick.value) setTool('op', { op: pick.value }); });
+          ops.append(pick);
         }
+        groups.push(ops);
         const utils = hel('div', 'bt-group');
         utils.append(hel('span', 'bt-lbl', 'Util'));
-        Icons.UTIL.forEach(u => utils.append(btn(svgSpan(Icons.utilSVG(u.k, 22)), 'Place: ' + u.label, tool.name === 'util' && tool.util === u.k, () => setTool('util', { util: u.k }), 'icon')));
+        Icons.UTIL.forEach(u => utils.append(dragBtn(btn(svgSpan(Icons.utilSVG(u.k, 24)), u.label + ': drag onto the map, or click then click the map', tool.name === 'util' && tool.util === u.k, () => setTool('util', { util: u.k }), 'icon'),
+          () => svgSpan(Icons.utilSVG(u.k, 34)), p => ({ t: 'util', k: u.k, x: p[0], y: p[1] }))));
         groups.push(utils);
 
         const cols = hel('div', 'bt-group');
@@ -204,7 +266,7 @@ window.Board = (() => {
         if (hit >= 0) { o.layer.splice(hit, 1); changed(); }
         return;
       }
-      if (tool.name === 'select' || (hit >= 0 && tool.name !== 'path')) {
+      if (tool.name === 'select' || (hit >= 0 && !['path', 'pen', 'line', 'zone'].includes(tool.name))) {
         if (hit < 0) { sel = -1; render(); return; }
         sel = hit;
         const it = o.layer[hit];
@@ -213,8 +275,13 @@ window.Board = (() => {
         render();
         return;
       }
-      if (tool.name === 'path') {
-        drag = { path: [[x, y]] };
+      if (tool.name === 'path' || tool.name === 'pen') {
+        drag = { path: [[x, y]], pen: tool.name === 'pen' };
+        svg.setPointerCapture(e.pointerId);
+        return;
+      }
+      if (tool.name === 'line' || tool.name === 'zone') {
+        drag = { anchor: [x, y], kind: tool.name };
         svg.setPointerCapture(e.pointerId);
         return;
       }
@@ -236,12 +303,22 @@ window.Board = (() => {
     svg.addEventListener('pointermove', e => {
       if (!drag) return;
       const [x, y] = pt(e);
+      if (drag.anchor) {
+        const [ax, ay] = drag.anchor;
+        draftG.replaceChildren();
+        if (drag.kind === 'zone') {
+          el('rect', { x: Math.min(ax, x) * W, y: Math.min(ay, y) * H, width: Math.abs(x - ax) * W, height: Math.abs(y - ay) * H, fill: tool.color, 'fill-opacity': 0.15, stroke: tool.color, 'stroke-width': 2, 'stroke-dasharray': tool.dash ? '8 6' : null }, draftG);
+        } else {
+          el('path', { d: `M${ax * W} ${ay * H} L${x * W} ${y * H}`, stroke: tool.color, 'stroke-width': 4, 'stroke-linecap': 'round', 'stroke-dasharray': tool.dash ? '10 8' : null, 'marker-end': `url(#ah${colorIdx(tool.color)})`, opacity: 0.85 }, draftG);
+        }
+        return;
+      }
       if (drag.path) {
         const last = drag.path[drag.path.length - 1];
         if (Math.hypot((x - last[0]) * W, (y - last[1]) * H) > 6) drag.path.push([x, y]);
         draftG.replaceChildren();
         const d = drag.path.map((p, i) => (i ? 'L' : 'M') + p[0] * W + ' ' + p[1] * H).join(' ') + ` L${x * W} ${y * H}`;
-        el('path', { d, fill: 'none', stroke: tool.color, 'stroke-width': 4, 'stroke-linecap': 'round', 'stroke-dasharray': tool.dash ? '10 8' : null, opacity: 0.8 }, draftG);
+        el('path', { d, fill: 'none', stroke: tool.color, 'stroke-width': drag.pen ? 3 : 4, 'stroke-linecap': 'round', 'stroke-dasharray': tool.dash ? '10 8' : null, opacity: 0.8 }, draftG);
         return;
       }
       const dx = x - drag.start[0], dy = y - drag.start[1];
@@ -254,15 +331,32 @@ window.Board = (() => {
       render();
     });
 
-    const end = e => {
+    const end = async e => {
       if (!drag) return;
+      if (drag.anchor) {
+        const [x, y] = pt(e);
+        const [ax, ay] = drag.anchor;
+        const kind = drag.kind;
+        drag = null;
+        draftG.replaceChildren();
+        if (Math.hypot((x - ax) * W, (y - ay) * H) < 12) return;
+        if (kind === 'line') {
+          o.layer.push({ t: 'path', pts: [[+ax.toFixed(4), +ay.toFixed(4)], [+x.toFixed(4), +y.toFixed(4)]], c: tool.color, dash: tool.dash || undefined });
+        } else {
+          const label = await o.ask('Label this zone (optional)', '');
+          if (label === null) return;
+          o.layer.push({ t: 'zone', x: +Math.min(ax, x).toFixed(4), y: +Math.min(ay, y).toFixed(4), w: +Math.abs(x - ax).toFixed(4), h: +Math.abs(y - ay).toFixed(4), c: tool.color, dash: tool.dash || undefined, label: label.trim() || undefined });
+        }
+        changed();
+        return;
+      }
       if (drag.path) {
         const [x, y] = pt(e);
         drag.path.push([x, y]);
         draftG.replaceChildren();
         const len = drag.path.reduce((s, p, i) => i ? s + Math.hypot((p[0] - drag.path[i - 1][0]) * W, (p[1] - drag.path[i - 1][1]) * H) : 0, 0);
         if (len > 12) {
-          o.layer.push({ t: 'path', pts: simplify(drag.path).map(p => [+p[0].toFixed(4), +p[1].toFixed(4)]), c: tool.color, dash: tool.dash || undefined });
+          o.layer.push({ t: 'path', pts: simplify(drag.path).map(p => [+p[0].toFixed(4), +p[1].toFixed(4)]), c: tool.color, dash: tool.dash || undefined, pen: drag.pen || undefined });
           drag = null;
           changed();
           return;
@@ -331,7 +425,10 @@ window.Board = (() => {
         if (k === 'v') { setTool('select'); return true; }
         if (k === 'e') { setTool('erase'); return true; }
         if (k === 't') { setTool('text'); return true; }
-        if (k === 'p' && o.mode !== 'callouts') { setTool('path'); return true; }
+        if (o.mode !== 'callouts') {
+          const map = { r: 'path', p: 'path', a: 'line', d: 'pen', z: 'zone' };
+          if (map[k]) { setTool(map[k]); return true; }
+        }
         if (k === 'escape') { sel = -1; setTool('select'); return true; }
         return false;
       },

@@ -107,13 +107,27 @@ function makeFloors(mapName) {
   return names.map(n => ({ id: slug(n) || uid(), name: n, img: null, ratio: 0.625 }));
 }
 
+function seedWeapons() {
+  return Object.entries(ARSENAL.weapons).map(([name, type]) => ({ id: slug(name), name, type, attach: '', recoil: '', notes: '', rating: 0, img: null }));
+}
+function seedGadgets() {
+  return ARSENAL.gadgets.map(name => ({ id: slug(name), name, notes: '', when: '' }));
+}
+function seedLoadout(opName) {
+  const l = ARSENAL.loadouts[opName];
+  const ids = str => (str || '').split('|').map(x => x.trim()).filter(Boolean).map(slug);
+  return l ? { primaries: ids(l[0]), secondaries: ids(l[1]), gadgets: ids(l[2]) } : { primaries: [], secondaries: [], gadgets: [] };
+}
+
 function freshDB() {
   return {
-    version: 2,
+    version: 3,
+    weapons: seedWeapons(),
+    gadgets: seedGadgets(),
     maps: SEED.maps.map(([name, sites]) => ({ id: slug(name), name, sites: [...sites], floors: makeFloors(name), callouts: {} })),
     operators: [
-      ...SEED.attackers.map(n => ({ id: slug(n), name: n, side: 'atk' })),
-      ...SEED.defenders.map(n => ({ id: slug(n), name: n, side: 'def' }))
+      ...SEED.attackers.map(n => ({ id: slug(n), name: n, side: 'atk', loadout: seedLoadout(n) })),
+      ...SEED.defenders.map(n => ({ id: slug(n), name: n, side: 'def', loadout: seedLoadout(n) }))
     ],
     strats: [],
     guides: {}
@@ -122,9 +136,19 @@ function freshDB() {
 
 function normalize(d) {
   if (!d || typeof d !== 'object') return freshDB();
-  d.version = 2;
+  d.version = 3;
   d.maps = Array.isArray(d.maps) ? d.maps : [];
   d.operators = Array.isArray(d.operators) ? d.operators : [];
+  if (!Array.isArray(d.weapons)) d.weapons = seedWeapons();
+  if (!Array.isArray(d.gadgets)) d.gadgets = seedGadgets();
+  for (const o of d.operators) {
+    if (!o.loadout) o.loadout = seedLoadout(o.name);
+    for (const k of ['primaries', 'secondaries', 'gadgets']) if (!Array.isArray(o.loadout[k])) o.loadout[k] = [];
+  }
+  for (const g of Object.values(d.guides || {})) {
+    g.pick = g.pick || { primary: '', secondary: '', gadget: '' };
+    if (g.attach == null) g.attach = [g.primary, g.secondary, g.gadget].filter(Boolean).join(' · ');
+  }
   d.strats = Array.isArray(d.strats) ? d.strats : [];
   d.guides = d.guides && typeof d.guides === 'object' ? d.guides : {};
   for (const m of d.maps) {
@@ -146,9 +170,22 @@ const mapById = id => db.maps.find(m => m.id === id);
 const opById = id => db.operators.find(o => o.id === id);
 const stratById = id => db.strats.find(s => s.id === id);
 const guideFor = id => (db.guides[id] = db.guides[id] || {
-  comfort: 0, role: '', primary: '', secondary: '', gadget: '',
+  comfort: 0, role: '', attach: '', pick: { primary: '', secondary: '', gadget: '' },
   playstyle: '', tips: '', counters: '', maps: [], notes: ''
 });
+const weaponById = id => db.weapons.find(w => w.id === id);
+const gadgetById = id => db.gadgets.find(g => g.id === id);
+const carriers = (id, kind) => db.operators.filter(o => (kind === 'gadget' ? o.loadout.gadgets : [...o.loadout.primaries, ...o.loadout.secondaries]).includes(id)).sort(byName);
+const typeInfo = t => ARSENAL.types[t] || { label: t || 'Other', color: '#a39d91' };
+const mapColor = m => m.color || Art.mapColor(m.name);
+const bannerCache = new Map();
+function bannerUrl(m) {
+  const own = m.banner && Store.cachedBlob(m.banner);
+  if (own) return `url("${own}")`;
+  const key = m.name + mapColor(m);
+  if (!bannerCache.has(key)) bannerCache.set(key, Art.svgUrl(Art.banner(m.name, mapColor(m))));
+  return bannerCache.get(key);
+}
 const guideFilled = id => {
   const g = db.guides[id];
   return g && (g.playstyle || g.tips || g.notes || g.role || g.primary || g.comfort > 0);
@@ -179,7 +216,7 @@ async function load() {
   try { d = await Store.load(); } catch (e) { d = null; setSaveState('Could not read data', true); }
   db = normalize(d);
   // Custom operator pictures are tiny; load them up front so icons draw instantly.
-  await Promise.all(db.operators.filter(o => o.img).map(o => Store.getBlob(o.img).catch(() => null)));
+  await Promise.all([...db.operators, ...db.weapons, ...db.maps.map(m => ({ img: m.banner }))].filter(o => o.img).map(o => Store.getBlob(o.img).catch(() => null)));
   if (!d) save(true); else setSaveState('Saved');
 }
 
@@ -217,18 +254,25 @@ function go(hash) { if (location.hash !== hash) location.hash = hash; else route
 function route() {
   if (board) { board.destroy(); board = null; }
   const [view, a, b, c, d] = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent);
-  const tab = view === 'ops' ? 'ops' : view === 'stats' ? 'stats' : 'maps';
+  const tab = ['ops', 'stats', 'arsenal'].includes(view) ? view : 'maps';
+  document.querySelector('.main').style.removeProperty('--map');
   document.querySelectorAll('#tabs a').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
   if (tab === 'ops') {
     const op = opById(a) || [...db.operators].sort(byName)[0];
     renderOpsRail(op && op.id);
     renderOp(op);
+  } else if (tab === 'arsenal') {
+    renderArsenalRail(a, b);
+    if (a === 'gadget') renderGadget(gadgetById(b) || db.gadgets[0]);
+    else renderWeapon(weaponById(b) || weaponById(a) || db.weapons[0]);
   } else if (tab === 'stats') {
     renderStatsRail(a);
     renderStats(mapById(a));
   } else {
-    const map = mapById(a) || mapById('clubhouse') || db.maps[0];
+    const map = mapById(a);
     renderMapsRail(map && map.id);
+    if (!map) { renderMapsHome(); return; }
+    document.querySelector('.main').style.setProperty('--map', mapColor(map));
     if (b === 'blueprints') renderBlueprints(map, c);
     else renderMap(map, b === 's' ? c : null, d === 'board');
   }
@@ -245,11 +289,13 @@ function railKeep(fn) {
 
 function renderMapsRail(activeId) {
   railKeep(() => [
+    h('a', { class: 'rail-item' + (!activeId ? ' on' : ''), href: '#/maps' },
+      h('span', { class: 'num', text: '--' }), h('span', { class: 'name', text: 'All maps' }), h('span', { class: 'count', text: '' })),
     h('div', { class: 'rail-label' }, h('span', { text: 'Maps' }), h('span', { text: String(db.maps.length) })),
     db.maps.map((m, i) => {
       const n = db.strats.filter(s => s.mapId === m.id).length;
       const bp = m.floors.some(f => f.img);
-      return h('a', { class: 'rail-item' + (m.id === activeId ? ' on' : ''), href: '#/maps/' + m.id },
+      return h('a', { class: 'rail-item map' + (m.id === activeId ? ' on' : ''), href: '#/maps/' + m.id, style: '--map:' + mapColor(m) },
         h('span', { class: 'num', text: pad(i + 1) }),
         h('span', { class: 'name' }, m.name, bp ? h('i', { class: 'bp-dot', title: 'Has blueprints' }) : null),
         h('span', { class: 'count' + (n ? ' has' : ''), text: n ? String(n) : '·' }));
@@ -347,7 +393,7 @@ function mapHead(map, view) {
         h('button', { class: 'btn primary', onclick: () => newStrat(map, '') }, 'New strat', h('kbd', { text: 'N' }))
       ]
     : [h('button', { class: 'btn', text: ui.floorsOpen ? 'Done' : 'Edit floors', onclick: () => { ui.floorsOpen = !ui.floorsOpen; route(); } })];
-  return h('header', { class: 'head' },
+  return h('header', { class: 'head banner', style: `background-image: linear-gradient(90deg, #121110f0 0%, #121110b0 40%, #12111020 100%), ${bannerUrl(map)}` },
     h('div', { class: 'head-num', text: pad(idx) }),
     h('div', {},
       h('h1', { class: 'head-title', text: map.name }),
@@ -659,6 +705,7 @@ async function mountStratBoard(s) {
     mode: 'strat', image, ratio: floor.ratio || 0.625,
     layer, ghosts, callouts: map.callouts[floor.id] || [], showCallouts: ui.showCallouts,
     lineup, findOp: opById, ask,
+    allOps: db.operators.filter(o => o.side === s.side).sort(byName),
     onChange: () => { touch(s); refreshBoardCount(s); },
     extraTools: [wideBtn, clearBtn, exportBtn]
   });
@@ -719,12 +766,38 @@ async function renderBlueprints(map, floorId) {
       h('p', { text: 'Import an image of this floor, such as a screenshot of the in-game map or a blueprint you have saved. Stratbook shrinks it to save space. You can still place callouts on the grid without one.' }),
       h('button', { class: 'btn primary', text: 'Import blueprint', onclick: () => importBlueprint(map, floor) }))));
 
+  body.append(h('div', { class: 'ed banner-tools' },
+    section('Map banner and colour', 'Used for this map\'s header, card and accents', h('div', { class: 'ed-meta' },
+      h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Colour' }),
+        h('input', { type: 'color', value: toHex(mapColor(map)), onchange: e => { map.color = e.target.value; save(); route(); } })),
+      h('button', { class: 'btn', text: map.banner ? 'Change banner image' : 'Use your own banner image', onclick: () => importBanner(map) }),
+      map.banner || map.color ? h('button', { class: 'link', text: 'Back to the generated banner', onclick: async () => {
+        if (map.banner) await Store.delBlob(map.banner).catch(() => {});
+        map.banner = null; map.color = null; save(); route();
+      } }) : null))));
+
   board = Board.mount(stage, {
     mode: 'callouts', image, ratio: floor.ratio || 0.625,
     layer: callouts, ask,
     onChange: () => save(),
     extraTools: [removeBtn, importBtn].filter(Boolean)
   });
+}
+
+function toHex(c) {
+  if (/^#[0-9a-f]{6}$/i.test(c)) return c;
+  const cv = document.createElement('canvas').getContext('2d');
+  cv.fillStyle = c;
+  return cv.fillStyle.startsWith('#') ? cv.fillStyle : '#888888';
+}
+
+async function importBanner(map) {
+  const file = await pickImage();
+  if (!file) return;
+  const { url } = await shrinkImage(file, 1600, 0.82);
+  const key = slug('banner-' + map.id) || 'banner-' + uid();
+  await Store.putBlob(key, url);
+  map.banner = key; save(); route();
 }
 
 async function importBlueprint(map, floor) {
@@ -789,6 +862,241 @@ async function resetIcons() {
   save(); route();
 }
 
+/* ================= maps home ================= */
+
+function renderMapsHome() {
+  const total = db.strats.length;
+  const cards = db.maps.map(m => {
+    const strats = db.strats.filter(s => s.mapId === m.id);
+    const rs = strats.flatMap(s => s.results);
+    const w = rs.filter(r => r.w).length;
+    const bps = m.floors.filter(f => f.img).length;
+    return h('a', { class: 'map-card', href: '#/maps/' + m.id, style: `--map:${mapColor(m)}; background-image: linear-gradient(180deg, #12111000 30%, #121110f2 100%), ${bannerUrl(m)}` },
+      h('span', { class: 'map-card-name', text: m.name }),
+      h('span', { class: 'map-card-meta' },
+        h('span', { text: strats.length ? `${strats.length} strat${strats.length > 1 ? 's' : ''}` : 'No strats' }),
+        rs.length ? h('span', { text: `${pct(w, rs.length)}% win` }) : null,
+        h('span', { text: `${bps}/${m.floors.length} blueprints` })));
+  });
+  $('#main').replaceChildren(
+    h('header', { class: 'head' },
+      h('div', { class: 'head-num', text: '--' }),
+      h('div', {}, h('h1', { class: 'head-title', text: 'Maps' }),
+        h('div', { class: 'head-sub' }, h('b', { text: String(db.maps.length) }), ' maps · ', h('b', { text: String(total) }), total === 1 ? ' strat' : ' strats')),
+      h('div', { class: 'head-tools' }, h('button', { class: 'btn', text: '+ Add map', onclick: addMap }))),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'map-grid' }, cards)));
+}
+
+/* ================= arsenal ================= */
+
+function weaponArt(w, width, height) {
+  const own = w.img && Store.cachedBlob(w.img);
+  const box = h('span', { class: 'gun-art', style: `width:${width}px;height:${height}px;--gun:${typeInfo(w.type).color}` });
+  if (own) box.append(h('img', { src: own, alt: '' }));
+  else box.innerHTML = Art.weaponSVG(w.type, typeInfo(w.type).color, width, height);
+  return box;
+}
+function gadgetArt(g, px) {
+  const box = h('span', { class: 'gadget-art' });
+  box.innerHTML = Art.gadgetSVG(g.id, g.name, px);
+  return box;
+}
+
+function renderArsenalRail(a, b) {
+  const activeW = a !== 'gadget' ? (b || a) : null;
+  const activeG = a === 'gadget' ? b : null;
+  const q = (ui.armQuery || '').trim().toLowerCase();
+  const match = x => !q || x.name.toLowerCase().includes(q);
+  const groups = ARSENAL.typeOrder.concat([...new Set(db.weapons.map(w => w.type))].filter(t => !ARSENAL.typeOrder.includes(t)))
+    .map(t => [t, db.weapons.filter(w => w.type === t && match(w)).sort(byName)]).filter(([, list]) => list.length);
+  railKeep(() => [
+    h('input', { class: 'in rail-search', type: 'text', placeholder: 'Filter weapons and gadgets', value: ui.armQuery || '', id: 'armFilter',
+      oninput: e => { ui.armQuery = e.target.value; renderArsenalRail(a, b); const f = $('#armFilter'); f.focus(); f.setSelectionRange(f.value.length, f.value.length); } }),
+    groups.map(([t, list]) => [
+      h('div', { class: 'rail-label', style: '--type:' + typeInfo(t).color }, h('span', { class: 'type-lbl', text: typeInfo(t).label }), h('span', { text: String(list.length) })),
+      list.map(w => h('a', { class: 'rail-item gun' + (w.id === activeW ? ' on' : ''), href: '#/arsenal/w/' + w.id },
+        weaponArt(w, 44, 15), h('span', { class: 'name', text: w.name }),
+        h('span', { class: 'count', text: String(carriers(w.id).length || '') })))
+    ]),
+    (() => {
+      const gs = db.gadgets.filter(match).sort(byName);
+      return gs.length ? [
+        h('div', { class: 'rail-label' }, h('span', { text: 'Secondary gadgets' }), h('span', { text: String(gs.length) })),
+        gs.map(g => h('a', { class: 'rail-item gun' + (g.id === activeG ? ' on' : ''), href: '#/arsenal/gadget/' + g.id },
+          gadgetArt(g, 20), h('span', { class: 'name', text: g.name }), h('span', { class: 'count', text: String(carriers(g.id, 'gadget').length || '') })))
+      ] : [];
+    })(),
+    h('div', { class: 'rail-label col' },
+      h('button', { class: 'link', text: '+ Add weapon', onclick: addWeapon }),
+      h('button', { class: 'link', text: '+ Add gadget', onclick: addGadget }),
+      h('button', { class: 'link', text: '+ Import weapon images', title: 'Pick many images at once; each is matched to a weapon by file name', onclick: importWeaponPack }))
+  ]);
+}
+
+function carrierChips(list) {
+  if (!list.length) return h('p', { class: 'hint', text: 'No operator has this in their loadout. Add it from an operator\'s Loadout section.' });
+  return h('div', { class: 'op-chips' }, list.map(o => h('a', { class: 'op-chip ' + o.side, href: '#/ops/' + o.id }, Icons.opIcon(o, 26), h('span', { text: o.name }))));
+}
+
+function renderWeapon(w) {
+  const main = $('#main');
+  if (!w) { main.replaceChildren(h('div', { class: 'empty' }, h('h3', { text: 'No weapons' }))); return; }
+  const ti = typeInfo(w.type);
+  const field = (label, key, ph) => h('label', { class: 'stack' }, h('span', { class: 'lbl block', text: label }),
+    h('input', { class: 'in', type: 'text', value: w[key] || '', placeholder: ph, oninput: e => { w[key] = e.target.value; save(); } }));
+  const area = (key, ph) => h('textarea', { class: 'steps', value: w[key] || '', placeholder: ph, oninput: e => { w[key] = e.target.value; save(); } });
+  const rating = h('div', { class: 'comfort' });
+  const paintRating = () => rating.replaceChildren(...[1, 2, 3, 4, 5].map(k => h('button', { class: k <= (w.rating || 0) ? 'on' : '', 'aria-label': 'Rating ' + k,
+    onclick: () => { w.rating = w.rating === k ? 0 : k; save(); paintRating(); } })));
+  paintRating();
+
+  const typeSel = h('select', { value: w.type, onchange: e => { w.type = e.target.value; save(); route(); } },
+    ARSENAL.typeOrder.map(t => h('option', { value: t, text: typeInfo(t).label })));
+  const nameIn = h('input', { class: 'in', type: 'text', value: w.name, onchange: e => { const v = e.target.value.trim(); if (v) { w.name = v; save(); route(); } } });
+
+  main.replaceChildren(
+    h('header', { class: 'head gun-head', style: '--gun:' + ti.color },
+      weaponArt(w, 220, 77),
+      h('div', {},
+        h('h1', { class: 'head-title', text: w.name }),
+        h('div', { class: 'head-sub' }, h('span', { class: 'type-tag', text: ti.label }), '  ', h('b', { text: String(carriers(w.id).length) }), ' operators')),
+      h('div', { class: 'head-tools' }, h('span', { class: 'lbl', text: 'My rating' }), rating)),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed' },
+      section('Carried by', 'Click an operator to open their guide', carrierChips(carriers(w.id))),
+      section('Attachments', 'What you run on it', h('div', { class: 'grid3' },
+        field('Sight', 'sight', 'e.g. red dot, 1.5x'), field('Barrel', 'barrel', 'e.g. compensator'), field('Grip', 'grip', 'e.g. vertical grip'))),
+      h('div', { class: 'grid2' },
+        section('Recoil', 'How it kicks and how you pull it', area('recoil', 'e.g. straight up for 8 rounds, then right')),
+        section('Notes', 'When to pick it, range, quirks', area('notes', 'Anything you want to remember'))),
+      section('Picture', 'An original silhouette is drawn for each weapon type. You can use your own image instead.', h('div', { class: 'ed-meta' },
+        h('button', { class: 'btn', text: w.img ? 'Change image' : 'Use your own image', onclick: async () => {
+          const file = await pickImage(); if (!file) return;
+          const { url } = await shrinkImage(file, 480, 0.85);
+          const key = slug('wpn-' + w.id) || 'wpn-' + uid();
+          await Store.putBlob(key, url); w.img = key; save(); route();
+        } }),
+        w.img ? h('button', { class: 'link', text: 'Back to the silhouette', onclick: async () => { await Store.delBlob(w.img).catch(() => {}); w.img = null; save(); route(); } }) : null,
+        h('button', { class: 'link', text: 'Import weapon images', onclick: importWeaponPack }))),
+      section('Weapon', 'Rename, change type, or remove', h('div', { class: 'ed-meta' },
+        h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Name' }), nameIn),
+        h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Type' }), typeSel),
+        h('button', { class: 'danger', text: 'Remove weapon', onclick: async () => {
+          if (!(await confirmBox('Remove ' + w.name + '?', 'It is also taken out of every operator loadout.', 'Remove', true))) return;
+          if (w.img) Store.delBlob(w.img).catch(() => {});
+          db.weapons = db.weapons.filter(x => x !== w);
+          db.operators.forEach(o => { o.loadout.primaries = o.loadout.primaries.filter(x => x !== w.id); o.loadout.secondaries = o.loadout.secondaries.filter(x => x !== w.id); });
+          save(); go('#/arsenal');
+        } }))))));
+}
+
+function renderGadget(g) {
+  const main = $('#main');
+  if (!g) { main.replaceChildren(h('div', { class: 'empty' }, h('h3', { text: 'No gadgets' }))); return; }
+  const area = (key, ph) => h('textarea', { class: 'steps', value: g[key] || '', placeholder: ph, oninput: e => { g[key] = e.target.value; save(); } });
+  main.replaceChildren(
+    h('header', { class: 'head' },
+      gadgetArt(g, 64),
+      h('div', {}, h('h1', { class: 'head-title', text: g.name }),
+        h('div', { class: 'head-sub' }, h('span', { class: 'type-tag', text: 'Secondary gadget' }), '  ', h('b', { text: String(carriers(g.id, 'gadget').length) }), ' operators')),
+      h('div', { class: 'head-tools' })),
+    h('section', { class: 'detail', style: 'flex:1' }, h('div', { class: 'ed' },
+      section('Carried by', null, carrierChips(carriers(g.id, 'gadget'))),
+      h('div', { class: 'grid2' },
+        section('When I take it', null, area('when', 'e.g. on sites with soft walls I need to open')),
+        section('Notes', 'Spots, throws, timings', area('notes', 'Anything you want to remember'))),
+      section('Gadget', 'Rename or remove', h('div', { class: 'ed-meta' },
+        h('label', { class: 'field-inline' }, h('span', { class: 'lbl', text: 'Name' }),
+          h('input', { class: 'in', type: 'text', value: g.name, onchange: e => { const v = e.target.value.trim(); if (v) { g.name = v; save(); route(); } } })),
+        h('button', { class: 'danger', text: 'Remove gadget', onclick: async () => {
+          if (!(await confirmBox('Remove ' + g.name + '?', 'It is also taken out of every operator loadout.', 'Remove', true))) return;
+          db.gadgets = db.gadgets.filter(x => x !== g);
+          db.operators.forEach(o => { o.loadout.gadgets = o.loadout.gadgets.filter(x => x !== g.id); });
+          save(); go('#/arsenal');
+        } }))))));
+}
+
+async function addWeapon() {
+  const name = await ask('New weapon', '');
+  if (!name || !name.trim()) return;
+  let id = slug(name) || uid();
+  if (weaponById(id)) id += '-' + uid().slice(0, 4);
+  db.weapons.push({ id, name: name.trim(), type: 'ar', attach: '', recoil: '', notes: '', rating: 0, img: null });
+  save(); go('#/arsenal/w/' + id);
+}
+async function addGadget() {
+  const name = await ask('New gadget', '');
+  if (!name || !name.trim()) return;
+  let id = slug(name) || uid();
+  if (gadgetById(id)) id += '-' + uid().slice(0, 4);
+  db.gadgets.push({ id, name: name.trim(), notes: '', when: '' });
+  save(); go('#/arsenal/gadget/' + id);
+}
+
+// Match image files to weapons by file name ("R4-C.png", "weapon_mp5k.webp").
+async function importWeaponPack() {
+  const files = await pickImages();
+  if (!files.length) return;
+  const list = [...db.weapons].sort((a, b) => b.id.length - a.id.length);
+  let done = 0; const missed = [];
+  for (const f of files) {
+    const base = slug(f.name.replace(/\.[^.]+$/, ''));
+    const tokens = base.split('-').filter(Boolean);
+    const w = list.find(x => x.id === base) || list.find(x => {
+      const want = x.id.split('-');
+      for (let i = 0; i + want.length <= tokens.length; i++) if (want.every((t, j) => tokens[i + j] === t)) return true;
+      return false;
+    });
+    if (!w) { missed.push(f.name); continue; }
+    try {
+      const { url } = await shrinkImage(f, 480, 0.85);
+      const key = slug('wpn-' + w.id) || 'wpn-' + uid();
+      await Store.putBlob(key, url); w.img = key; done++;
+    } catch (e) { missed.push(f.name); }
+  }
+  save(); route();
+  toast(`Set ${done} weapon image${done === 1 ? '' : 's'}` + (missed.length ? `. No match for ${missed.length}: ${missed.slice(0, 6).join(', ')}${missed.length > 6 ? '…' : ''}` : '.'));
+}
+
+/* ---------- operator loadout ---------- */
+
+function loadoutBlock(op, g) {
+  const wrap = h('div', { class: 'loadout' });
+  let editing = false;
+  const paint = () => {
+    const row = (label, key, pickKey, kind) => {
+      const ids = op.loadout[key];
+      const items = ids.map(id => kind === 'gadget' ? gadgetById(id) : weaponById(id)).filter(Boolean);
+      const cards = items.map(x => {
+        const picked = g.pick[pickKey] === x.id;
+        const card = h('div', { class: 'gun-card' + (picked ? ' picked' : '') + (kind === 'gadget' ? ' gadget' : ''), title: editing ? '' : (picked ? 'Your pick. Click to clear.' : 'Click to mark as your pick'),
+          style: kind === 'gadget' ? null : '--gun:' + typeInfo(x.type).color,
+          onclick: () => { if (editing) return; g.pick[pickKey] = picked ? '' : x.id; save(); paint(); } },
+          kind === 'gadget' ? gadgetArt(x, 34) : weaponArt(x, 132, 46),
+          h('span', { class: 'gun-name' }, h('a', { href: kind === 'gadget' ? '#/arsenal/gadget/' + x.id : '#/arsenal/w/' + x.id, text: x.name, onclick: e => e.stopPropagation() })),
+          h('span', { class: 'gun-type', text: kind === 'gadget' ? 'Gadget' : typeInfo(x.type).label }),
+          picked ? h('span', { class: 'pick-tag', text: 'My pick' }) : null,
+          editing ? h('button', { class: 'gun-x', text: '×', title: 'Remove from loadout', onclick: e => { e.stopPropagation(); op.loadout[key] = ids.filter(i => i !== x.id); save(); paint(); } }) : null);
+        return card;
+      });
+      const pool = kind === 'gadget' ? db.gadgets : db.weapons;
+      const adder = editing ? h('select', { class: 'gun-add', onchange: e => { if (e.target.value) { op.loadout[key] = [...ids, e.target.value]; save(); paint(); } } },
+        h('option', { value: '', text: '+ Add ' + label.toLowerCase() }),
+        [...pool].filter(x => !ids.includes(x.id)).sort(byName).map(x => h('option', { value: x.id, text: x.name }))) : null;
+      return h('div', { class: 'loadout-row' }, h('span', { class: 'lbl block', text: label }),
+        h('div', { class: 'gun-cards' }, cards, adder, !cards.length && !editing ? h('span', { class: 'hint', text: 'None set. Use Edit options to add.' }) : null));
+    };
+    wrap.replaceChildren(
+      row('Primary', 'primaries', 'primary', 'weapon'),
+      row('Secondary', 'secondaries', 'secondary', 'weapon'),
+      row('Gadget', 'gadgets', 'gadget', 'gadget'),
+      h('div', { class: 'loadout-foot' },
+        h('button', { class: 'btn', text: editing ? 'Done' : 'Edit options', onclick: () => { editing = !editing; paint(); } }),
+        h('span', { class: 'hint', text: editing ? 'Add or remove what this operator can take.' : 'Click a weapon or gadget to mark what you run. Loadouts are starting data: fix any that changed in the game.' })));
+  };
+  paint();
+  return wrap;
+}
+
 /* ================= operators ================= */
 
 function renderOp(op) {
@@ -800,7 +1108,7 @@ function renderOp(op) {
   const g = guideFor(op.id);
 
   const iconBox = h('div', { class: 'op-big' }, Icons.opIcon(op, 72));
-  const head = h('header', { class: 'head' },
+  const head = h('header', { class: 'head op-hero', style: `--op: hsl(${Icons.hue(op.name, op.side)} 60% 55%)` },
     iconBox,
     h('div', {},
       h('h1', { class: 'head-title', text: op.name }),
@@ -867,12 +1175,10 @@ function renderOp(op) {
     db.operators.some(o => o.img) ? h('button', { class: 'link', text: 'Reset all to emblems', onclick: resetIcons }) : null);
 
   const ed = h('div', { class: 'ed' },
-    section('Role and loadout', null, h('div', {},
-      field('Role in your team', 'role', op.side === 'atk' ? 'e.g. hard breacher, entry, intel' : 'e.g. anchor, roamer, denial'),
-      h('div', { class: 'grid3', style: 'margin-top:10px' },
-        field('Primary', 'primary', 'Weapon, sight, grip'),
-        field('Secondary', 'secondary', 'Weapon'),
-        field('Gadget', 'gadget', 'Which secondary gadget')))),
+    section('Role', null, field('Role in your team', 'role', op.side === 'atk' ? 'e.g. hard breacher, entry, intel' : 'e.g. anchor, roamer, denial')),
+    section('Loadout', 'Everything this operator can take', h('div', {},
+      loadoutBlock(op, g),
+      h('div', { style: 'margin-top:12px' }, field('Attachments and setup', 'attach', 'e.g. R4-C: red dot, compensator, angled grip')))),
     section('How I play it', 'Your plan for this operator', area('playstyle', 'When you pick them, where you go, what you do in the first 30 seconds')),
     h('div', { class: 'grid2' },
       section('Gadget tips', 'One per line', area('tips', 'Spots, timings, tricks', 'steps')),
@@ -908,7 +1214,7 @@ function bars(rows, opts = {}) {
     h(r.href ? 'a' : 'div', { class: 'bar-row', href: r.href },
       h('span', { class: 'bar-lbl' }, r.icon || null, h('span', { text: r.label })),
       h('span', { class: 'bar-track' },
-        h('span', { class: 'bar-fill ' + (r.tone || ''), style: `width:${(opts.percent ? r.value : r.value / max * 100).toFixed(1)}%` }),
+        h('span', { class: 'bar-fill ' + (r.tone || ''), style: `width:${(opts.percent ? r.value : r.value / max * 100).toFixed(1)}%` + (r.color ? `;background:${r.color}` : '') }),
         opts.percent ? h('span', { class: 'bar-50' }) : null),
       h('span', { class: 'bar-val', text: r.text }))));
 }
@@ -927,7 +1233,7 @@ function renderStats(map) {
   const bySide = sumRows([['Attack', strats.filter(s => s.side === 'atk')], ['Defense', strats.filter(s => s.side === 'def')]]);
   const byWhere = map
     ? sumRows([...map.sites, ''].map(site => [site || 'No site', strats.filter(s => (site ? s.site === site : !map.sites.includes(s.site)))]))
-    : sumRows(db.maps.map(m => [m.name, strats.filter(s => s.mapId === m.id), '#/stats/' + m.id]));
+    : sumRows(db.maps.map(m => [m.name, strats.filter(s => s.mapId === m.id), '#/stats/' + m.id])).map(r => ({ ...r, color: mapColor(db.maps.find(m => m.name === r.label)) }));
 
   const stratRows = strats.filter(s => s.results.length)
     .map(s => { const r = record(s); const p = pct(r.w, r.n); const m = mapById(s.mapId);
@@ -995,6 +1301,8 @@ function runFinder(q) {
     for (const m of db.maps) if (has(m.name)) hits.push({ kind: 'Map', label: m.name, ctx: m.sites.length + ' sites', href: '#/maps/' + m.id });
     for (const m of db.maps) for (const f of m.floors) for (const c of (m.callouts[f.id] || []))
       if (has(c.text)) hits.push({ kind: 'Callout', label: c.text, ctx: m.name + ' · ' + f.name, href: '#/maps/' + m.id + '/blueprints/' + f.id });
+    for (const w of db.weapons) if (has(w.name) || has(w.notes)) hits.push({ kind: 'Weapon', label: w.name, ctx: typeInfo(w.type).label, href: '#/arsenal/w/' + w.id });
+    for (const g of db.gadgets) if (has(g.name)) hits.push({ kind: 'Gadget', label: g.name, ctx: 'secondary gadget', href: '#/arsenal/gadget/' + g.id });
     for (const o of db.operators) if (has(o.name)) hits.push({ kind: o.side === 'atk' ? 'Attack' : 'Defense', label: o.name, ctx: 'operator guide', href: '#/ops/' + o.id });
     for (const s of db.strats) {
       const text = [s.title, s.notes, s.site, s.tags.join(' '), ...s.phases, ...s.lineup.map(l => l.role)].join('\n');
@@ -1025,6 +1333,8 @@ async function exportData() {
   const blobs = {};
   for (const m of db.maps) for (const f of m.floors) if (f.img) blobs[f.img] = await Store.getBlob(f.img);
   for (const o of db.operators) if (o.img) blobs[o.img] = await Store.getBlob(o.img);
+  for (const w of db.weapons) if (w.img) blobs[w.img] = await Store.getBlob(w.img);
+  for (const m of db.maps) if (m.banner) blobs[m.banner] = await Store.getBlob(m.banner);
   const name = 'stratbook-backup-' + new Date().toISOString().slice(0, 10) + '.json';
   const where = await Store.exportText(name, JSON.stringify({ ...db, blobs }));
   toast(where ? 'Backup saved to ' + where : 'Backup downloaded');
